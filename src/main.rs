@@ -6,78 +6,80 @@ use http_body_util::combinators::BoxBody;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tray_icon::TrayIconEvent;
 use yup_oauth2::InstalledFlowAuthenticator;
+
+slint::include_modules!();
 
 type GoogleClient = hyper_util::client::legacy::Client<
     HttpsConnector<HttpConnector>,
     BoxBody<Bytes, google_youtube3::hyper::Error>,
 >;
 
-struct ClipSyncerApp {
-    tray_receiver: &'static crossbeam_channel::Receiver<TrayIconEvent>,
-    window: Option<winit::window::Window>,
-}
-
-impl winit::application::ApplicationHandler for ClipSyncerApp {
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
-    }
-    fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if let Ok(event) = self.tray_receiver.try_recv() {
-            println!("Tray Icon Event empfangen: {:?}", event);
-
-            match event {
-                TrayIconEvent::DoubleClick { .. } => {
-                    if self.window.is_none() {
-                        println!("Öffne Fenster");
-
-                        let window_attributes = winit::window::Window::default_attributes()
-                            .with_title("Clip Syncer Dashboard");
-
-                        let win = event_loop
-                            .create_window(window_attributes)
-                            .expect("Fehler bei der Fenstererstellung");
-                        self.window = Some(win)
-                    } else {
-                        println!("Fenster ist schon offen");
-                    }
-                }
-                _ => {}
-            }
-            // GUI FENSTER ÖFFNEN SCHLIEẞEN
-        }
-    }
-    fn window_event(
-        &mut self,
-        _event_loop: &winit::event_loop::ActiveEventLoop,
-        window_id: winit::window::WindowId,
-        event: winit::event::WindowEvent,
-    ) {
-        match event {
-            winit::event::WindowEvent::CloseRequested => {
-                if let Some(window) = &self.window {
-                    if window.id() == window_id {
-                        println!("Fenster geschlossen, App läuft im Tray weiter");
-                        self.window = None
-                    }
-                }
-            }
-            _ => (),
-        }
-    }
-}
-
 fn main() {
     let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler");
 
+    let image_path = "assets/icon.png";
+    let dynamic_image = image::open(image_path).expect("Fehler beim öffnen vom Icon");
+    let rgba_image = dynamic_image.to_rgba8();
+    let (width, height) = rgba_image.dimensions();
+    let raw_pixels = rgba_image.into_raw();
+
+    let icon =
+        tray_icon::Icon::from_rgba(raw_pixels, width, height).expect("Fehler beim Icon Tray");
+
     let tray_menu = tray_icon::menu::Menu::new();
+    let quit_item = tray_icon::menu::MenuItem::new("Beenden", true, None);
+    let quit_item_id = quit_item.id().clone();
+
+    tray_menu
+        .append(&quit_item)
+        .expect("Fehler bei der Menü Erstellung");
+
     let _tray_icon = tray_icon::TrayIconBuilder::new()
         .with_tooltip("Clip Syncer")
-        .with_menu(Box::new(tray_menu))
+        .with_icon(icon)
+        .with_menu(Box::new(tray_menu.clone()))
+        .with_menu_on_left_click(false)
         .build()
         .expect("Fehler beim erstellen des Tray Icons");
-    let tray_receiver = tray_icon::TrayIconEvent::receiver();
+
+    let ui = AppWindow::new().expect("Fehler beim erstellen vom UI");
+    let ui_weak = ui.as_weak();
+
+    let ui_close_handle = ui_weak.clone();
+    ui.window().on_close_requested(move || {
+        if let Some(ui) = ui_close_handle.upgrade() {
+            ui.hide().unwrap()
+        }
+
+        slint::CloseRequestResponse::KeepWindowShown
+    });
+
+    let ui_tray_handle = ui_weak.clone();
+    std::thread::spawn(move || {
+        let tray_receiver = tray_icon::TrayIconEvent::receiver();
+        while let Ok(event) = tray_receiver.recv() {
+            if let tray_icon::TrayIconEvent::Click { button, .. } = event {
+                if button == tray_icon::MouseButton::Left {
+                    let ui_handle = ui_tray_handle.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_handle.upgrade() {
+                            ui.show().unwrap();
+                        }
+                    });
+                }
+            }
+        }
+    });
+
+    std::thread::spawn(move || {
+        let menu_receiver = tray_icon::menu::MenuEvent::receiver();
+        while let Ok(event) = menu_receiver.recv() {
+            if event.id == quit_item_id {
+                let _ = slint::invoke_from_event_loop(|| slint::quit_event_loop().unwrap());
+            }
+        }
+    });
 
     rt.spawn(async move {
         rustls::crypto::aws_lc_rs::default_provider()
@@ -149,15 +151,9 @@ fn main() {
         }
     });
 
-    let event_loop = winit::event_loop::EventLoop::new().expect("Event Loop Erstellungs-Fehler");
-    let mut app = ClipSyncerApp {
-        tray_receiver,
-        window: None,
-    };
+    ui.show().unwrap();
 
-    event_loop
-        .run_app(&mut app)
-        .expect("Fehler beim Ausführen der App");
+    slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
 }
 
 async fn scan_dir(
@@ -284,6 +280,8 @@ fn process_video_file(input_file_path: &PathBuf) -> PathBuf {
             .arg("aac")
             .arg("-b:a")
             .arg("320k")
+            .arg("-movflags")
+            .arg("+faststart")
             .output(output_file_path.to_str().unwrap());
     } else {
         println!("Mehrere Spuren gefunden. Starte Audio-Mix...");

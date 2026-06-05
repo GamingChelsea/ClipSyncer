@@ -1,0 +1,33 @@
+import { Button } from "std-widgets.slint";
+export component AppWindow inherits Window {
+    width: 400px;
+    height: 300px;
+    title: "Clip Syncer Dashboard";
+    background: #1e1e1e;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 15px;
+        alignment: center;
+
+        Text {
+            text: "Clip Syncer Dashboard";
+            font-size: 24px;
+            color: white;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Status: Aktiv (Wartet auf Videos)";
+            font-size: 14px;
+            color: #a0a0a0;
+            horizontal-alignment: center;
+        }
+
+        Button {
+            text: "Schließen";
+            clicked => {
+            }
+        }
+    }
+}
