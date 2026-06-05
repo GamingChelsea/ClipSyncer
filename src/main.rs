@@ -138,69 +138,58 @@ fn main() {
             uploaded_files.push(line);
         }
 
+        let mut uploads_today = 0;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
+
         loop {
-            scan_dir(
-                path.clone(),
-                hub.clone(),
-                &mut uploaded_files,
-                &mut uploaded_list_file,
-            )
-            .await;
+            interval.tick().await;
+            println!("Starte Intervall Prüfung...");
 
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-    });
+            let pending_clips = get_pending_clips(&path, &uploaded_files).await;
 
-    ui.show().unwrap();
-
-    slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
-}
-
-async fn scan_dir(
-    path: PathBuf,
-    hub: google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
-    uploaded_files: &mut Vec<String>,
-    uploaded_list_file: &mut tokio::fs::File,
-) {
-    if false {
-        use tokio::fs::read_dir;
-
-        let mut entries = read_dir(&path)
-            .await
-            .expect(&format!("Pfad {:?} konnte nicht geöffnet werden", &path));
-
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .expect(&format!("Pfad {:?} konnte nicht gelesen werden", &path))
-        {
-            let file_path = entry.path();
-            if let Some(stem) = file_path.file_stem() {
-                if stem.to_string_lossy().ends_with("_converted") {
-                    continue;
-                }
+            if pending_clips.is_empty() {
+                println!("Keine neue Clips gefunden");
+                continue;
             }
 
-            if file_path.extension() == Some(OsStr::new("mp4"))
-                && !uploaded_files.contains(&path_to_string(&file_path))
-            {
-                let converted_path = process_video_file(&file_path);
+            println!(
+                "Es wurden {} Clips zum hochladen gefunden",
+                pending_clips.len()
+            );
 
-                let video_file = std::fs::File::open(&converted_path).expect(&format!(
+            for clip_paket in pending_clips.chunks(10) {
+                if uploads_today >= 10 {
+                    println!("Upload Limit für heute erreicht");
+                    break;
+                }
+
+                println!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
+
+                let combined_output = PathBuf::from("videos/batch_combined.mp4");
+
+                merge_multiple_videos(clip_paket, &combined_output).await;
+
+                let final_processed_video = process_video_file(&combined_output);
+
+                let video_file = std::fs::File::open(&final_processed_video).expect(&format!(
                     "{:?} konnte nicht geöffnet werden",
-                    &converted_path
+                    &final_processed_video
                 ));
 
                 let mut video = google_youtube3::api::Video::default();
-
                 let mut details = google_youtube3::api::VideoSnippet::default();
-                details.title = Some(
-                    file_path
-                        .file_name()
-                        .and_then(|os_str| os_str.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default(),
-                );
+                details.title = Some(format!(
+                    "Clip Compilation - {}",
+                    path_to_string(&clip_paket[0])
+                ));
+
+                let names: Vec<String> = clip_paket.iter().map(path_to_string).collect();
+                let names_combined = names.join(", ");
+                details.description = Some(format!(
+                    "Clip Compilation von den Videodateien: {}",
+                    names_combined
+                ));
+
                 details.category_id = Some("22".to_string());
                 video.snippet = Some(details);
 
@@ -210,17 +199,260 @@ async fn scan_dir(
 
                 upload_video(
                     video,
-                    file_path.clone(),
+                    final_processed_video.clone(),
                     &hub,
                     video_file,
-                    uploaded_files,
-                    uploaded_list_file,
+                    &mut uploaded_files,
+                    &mut uploaded_list_file,
                 )
                 .await;
 
-                let _ = tokio::fs::remove_file(converted_path).await;
+                for clip in clip_paket {
+                    let new_entry = path_to_string(clip);
+                    let data_formatted = format!("\n {}", &new_entry);
+                    uploaded_files.push(new_entry);
+                    uploaded_list_file
+                        .write_all(data_formatted.as_bytes())
+                        .await
+                        .expect("Fehler beim schreiben der Fertigen Liste");
+                }
+
+                let _ = tokio::fs::remove_file(combined_output).await;
+                let _ = tokio::fs::remove_file(final_processed_video).await;
+
+                uploads_today += 1;
             }
         }
+    });
+
+    ui.show().unwrap();
+
+    slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
+}
+
+async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {
+    use tokio::fs::read_dir;
+    let mut pending = Vec::new();
+
+    let mut entries = read_dir(path)
+        .await
+        .expect("Pfad konnte nicht geöffnet werden");
+
+    while let Some(entry) = entries.next_entry().await.expect("Fehler beim Lesen") {
+        let file_path = entry.path();
+
+        if let Some(stem) = file_path.file_stem() {
+            if stem.to_string_lossy().ends_with("_converted")
+                || stem.to_string_lossy().ends_with("_combined")
+            {
+                continue;
+            }
+        }
+
+        if file_path.extension() == Some(&OsStr::new("mp4")) {
+            let file_name_str = path_to_string(&file_path);
+            if !uploaded_files.contains(&file_name_str) {
+                pending.push(file_path);
+            }
+        }
+    }
+
+    pending.sort();
+    pending
+}
+
+async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &PathBuf) {
+    use tokio::io::AsyncWriteExt;
+
+    let (target_w, target_h) = probe_resolution(&chunks[0]).await;
+    let mut normalized: Vec<PathBuf> = Vec::with_capacity(chunks.len());
+
+    for (i, clip) in chunks.iter().enumerate() {
+        let tmp = PathBuf::from(format!("videos/norm_tmp_{}.mp4", i));
+        normalize_clip(clip, &tmp, target_w, target_h).await;
+        normalized.push(tmp);
+    }
+
+    let mut list_file = tokio::fs::File::create("inputs.txt").await.unwrap();
+    for path in &normalized {
+        list_file
+            .write_all(format!("file '{}'\n", path.to_string_lossy()).as_bytes())
+            .await
+            .expect("inputs.txt Schreibfehler");
+    }
+    list_file.flush().await.expect("Flush Fehler");
+
+    let status = tokio::process::Command::new("ffmpeg")
+        .arg("-y")
+        .args(["-f", "concat", "-safe", "0", "-i", "inputs.txt"])
+        .args(["-c", "copy"])
+        .arg(output_path)
+        .status()
+        .await
+        .expect("FFmpeg Merge Fehler");
+
+    if status.success() {
+        println!("Batch erfolgreich zusammengeführt!");
+    } else {
+        eprintln!("Merge fehlgeschlagen!");
+    }
+
+    let _ = tokio::fs::remove_file("inputs.txt").await;
+    for tmp in &normalized {
+        let _ = tokio::fs::remove_file(tmp).await;
+    }
+}
+
+async fn probe_resolution(path: &Path) -> (u32, u32) {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .expect("Fehler bei der Auflösung Processing");
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next().expect("Fehler bei dem Auflösungstext");
+    let mut parts = line.trim().split(",");
+    let w: u32 = parts
+        .next()
+        .expect("Fehler bei der Breite des Videos")
+        .parse()
+        .expect("Fehler bei der Breite des Videos");
+    let h: u32 = parts
+        .next()
+        .expect("Fehler bei der Höhe des Videos")
+        .parse()
+        .expect("Fehler bei der Höhe des Videos");
+    (w, h)
+}
+
+async fn probe_audio_track_count(path: &Path) -> usize {
+    if let Ok(output) = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .await
+    {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count()
+    } else {
+        0
+    }
+}
+
+async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32) {
+    let audio_tracks = probe_audio_track_count(input).await;
+    println!(
+        "Normalisiere {:?}  →  {}×{}  ({} Audiospur/en)",
+        input.file_name().unwrap_or_default(),
+        width,
+        height,
+        audio_tracks
+    );
+
+    let scale = format!(
+        "[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,\
+         pad=w={w}:h={h}:x=(ow-iw)/2:y=(oh-ih)/2:color=black,setsar=1,fps=60[vout]",
+        w = width,
+        h = height
+    );
+
+    let mut cmd = tokio::process::Command::new("ffmpeg");
+    cmd.arg("-y").arg("-i").arg(input);
+
+    match audio_tracks {
+        0 => {
+            cmd.args(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]);
+            cmd.args(["-filter_complex", &scale])
+                .args(["-map", "[vout]", "-map", "1:a:0"])
+                .args([
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-ar",
+                    "44100",
+                    "-shortest",
+                ]);
+        }
+        1 => {
+            cmd.args(["-filter_complex", &scale])
+                .args(["-map", "[vout]", "-map", "0:a:0"])
+                .args([
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-ac",
+                    "2",
+                    "-ar",
+                    "44100",
+                    "-shortest",
+                ]);
+        }
+        n => {
+            let mix_inputs: String = (0..n).map(|i| format!("[0:a:{}]", i)).collect();
+            let filter = format!(
+                "{};{}amix=inputs={}:duration=longest[aout]",
+                scale, mix_inputs, n
+            );
+            cmd.args(["-filter_complex", &filter])
+                .args(["-map", "[vout]", "-map", "[aout]"])
+                .args([
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "fast",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                    "-ac",
+                    "2",
+                    "-ar",
+                    "44100",
+                    "-shortest",
+                ]);
+        }
+    }
+
+    cmd.arg(output);
+    let status = cmd.status().await.expect("FFmpeg Normalize Fehler");
+    if status.success() {
+        println!("✓  {:?}", output.file_name().unwrap_or_default());
+    } else {
+        eprintln!(
+            "✗  Normalisierung fehlgeschlagen: {:?}",
+            input.file_name().unwrap_or_default()
+        );
     }
 }
 
@@ -228,110 +460,31 @@ fn process_video_file(input_file_path: &PathBuf) -> PathBuf {
     let output_file_path = if let (Some(stem), Some(ext)) =
         (input_file_path.file_stem(), input_file_path.extension())
     {
-        let mut new_filename = stem.to_os_string();
-        new_filename.push("_converted.");
-        new_filename.push(ext);
-        input_file_path.with_file_name(new_filename)
+        let mut name = stem.to_os_string();
+        name.push("_converted.");
+        name.push(ext);
+        input_file_path.with_file_name(name)
     } else {
         input_file_path.clone()
     };
 
-    let mut audio_track_count = 0;
-
-    if let Ok(output) = std::process::Command::new("ffprobe")
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("a")
-        .arg("-show_entries")
-        .arg("stream=index")
-        .arg("-of")
-        .arg("csv=p=0")
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
         .arg(input_file_path)
-        .output()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        audio_track_count = stdout.lines().filter(|l| !l.trim().is_empty()).count();
-    }
+        .args(["-c", "copy", "-movflags", "+faststart"])
+        .arg(&output_file_path)
+        .status()
+        .expect("FFmpeg faststart Fehler");
 
-    println!(
-        "Datei {:?} hat {} Audiospur(en).",
-        input_file_path.file_name().unwrap_or_default(),
-        audio_track_count
-    );
-
-    let mut command = ffmpeg_sidecar::command::FfmpegCommand::new();
-    command.arg("-y");
-    command.arg("-i").arg(input_file_path);
-
-    if audio_track_count == 0 {
-        println!("Video ist stumm. Kopiere nur die Videospur...");
-        command
-            .arg("-c:v")
-            .arg("copy")
-            .arg("-an")
-            .output(output_file_path.to_str().unwrap());
-    } else if audio_track_count == 1 {
-        println!("Nur 1 Audiospur gefunden. Mischen nicht notwendig.");
-        command
-            .arg("-c:v")
-            .arg("copy")
-            .arg("-c:a")
-            .arg("aac")
-            .arg("-b:a")
-            .arg("320k")
-            .arg("-movflags")
-            .arg("+faststart")
-            .output(output_file_path.to_str().unwrap());
-    } else {
-        println!("Mehrere Spuren gefunden. Starte Audio-Mix...");
-        let mut filter_input = String::new();
-        for i in 0..audio_track_count {
-            filter_input.push_str(&format!("[0:a:{}]", i));
-        }
-        let filter_complex_str = format!(
-            "{}amix=inputs={}:duration=longest[aout]",
-            filter_input, audio_track_count
+    if status.success() {
+        println!(
+            "Videoverarbeitung abgeschlossen: {:?}",
+            output_file_path.file_name()
         );
-
-        command
-            .arg("-filter_complex")
-            .arg(&filter_complex_str)
-            .arg("-map")
-            .arg("0:v:0")
-            .arg("-map")
-            .arg("[aout]")
-            .arg("-c:v")
-            .arg("copy")
-            .arg("-c:a")
-            .arg("aac")
-            .arg("-b:a")
-            .arg("320k")
-            .output(output_file_path.to_str().unwrap());
+    } else {
+        eprintln!("Fehler bei der Videoverarbeitung");
     }
-
-    let mut child = command.spawn().expect("ffmpeg Fehler beim Starten");
-
-    for event in child.iter().expect("Fehler beim Iterieren vom FFmpeg") {
-        match event {
-            ffmpeg_sidecar::event::FfmpegEvent::Progress(progress) => {
-                println!(
-                    "Fortschritt: Frame {}, Zeit: {}s, Geschwindigkeit: {}x",
-                    progress.frame, progress.time, progress.speed
-                );
-            }
-            ffmpeg_sidecar::event::FfmpegEvent::Log(level, msg) => {
-                if level == ffmpeg_sidecar::event::LogLevel::Error {
-                    eprintln!("FFmpeg Fehler: {}", msg);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let _ = child.wait();
-
-    println!("Videoverarbeitung abgeschlossen.");
     output_file_path
 }
 
