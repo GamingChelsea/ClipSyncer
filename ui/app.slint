@@ -1,32 +1,77 @@
-import { Button } from "std-widgets.slint";
-export component AppWindow inherits Window {
-    width: 400px;
-    height: 300px;
-    title: "Clip Syncer Dashboard";
-    background: #1e1e1e;
+import { LineEdit, VerticalBox } from "std-widgets.slint";
+import { Button } from "slintcn/components/button.slint";
+
+ export component AppWindow inherits Window {
+    preferred-width: 500px;
+    min-width: 400px;
+    preferred-height: 380px;
+    min-height: 280px;
+    title: "Clip Syncer";
+    background: #1a1a1a;
+
+    callback open_save_dialog();
+    in property <string> selected_path: "Kein Pfad ausgewählt";
+    in property <string> status_text: "Wartet auf Videos...";
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 15px;
+        padding: 32px;
+        spacing: 20px;
+        width: min(root.width - 64px, 600px);
         alignment: center;
 
-        Text {
-            text: "Clip Syncer Dashboard";
-            font-size: 24px;
-            color: white;
+        Title := Text {
+            text: "Clip Syncer";
+            font-size: 48px;
+            font-weight: 700;
+            color: #ffffff;
             horizontal-alignment: center;
         }
 
-        Text {
-            text: "Status: Aktiv (Wartet auf Videos)";
-            font-size: 14px;
-            color: #a0a0a0;
+        Status := Text {
+            text: root.status_text;
+            font-size: 13px;
+            color: #888888;
             horizontal-alignment: center;
         }
 
-        Button {
-            text: "Schließen";
-            clicked => {
+        Separator := Rectangle {
+            height: 1px;
+            background: #333333;
+        }
+
+        PathButton := HorizontalLayout {
+            spacing: 10px;
+            height: 36px;
+            padding-left: 10px;
+            padding-right: 10px;
+
+            PathOutline := Rectangle {
+                background: #2a2a2a;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #3a3a3a;
+                horizontal-stretch: 8;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+
+                    Path := Text {
+                        text: root.selected_path;
+                        color: #aaaaaa;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                        wrap: no-wrap;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            SelectButton := Button {
+                text: "Wählen...";
+                horizontal-stretch: 1;
+                clicked => { root.open_save_dialog(); }
             }
         }
     }

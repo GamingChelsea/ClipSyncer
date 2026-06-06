@@ -3,8 +3,10 @@ use google_youtube3::hyper_rustls::HttpsConnector;
 use google_youtube3::hyper_util;
 use google_youtube3::hyper_util::client::legacy::connect::HttpConnector;
 use http_body_util::combinators::BoxBody;
+use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use yup_oauth2::InstalledFlowAuthenticator;
 
@@ -15,7 +17,15 @@ type GoogleClient = hyper_util::client::legacy::Client<
     BoxBody<Bytes, google_youtube3::hyper::Error>,
 >;
 
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct AppStorage {
+    clip_location: Option<PathBuf>,
+    uploaded_files: Vec<String>,
+}
+
 fn main() {
+    let storage = load_storage();
+
     let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler");
 
     let image_path = "assets/icon.png";
@@ -28,9 +38,14 @@ fn main() {
         tray_icon::Icon::from_rgba(raw_pixels, width, height).expect("Fehler beim Icon Tray");
 
     let tray_menu = tray_icon::menu::Menu::new();
+    let open_item = tray_icon::menu::MenuItem::new("Öffnen", true, None);
+    let open_item_id = open_item.id().clone();
     let quit_item = tray_icon::menu::MenuItem::new("Beenden", true, None);
     let quit_item_id = quit_item.id().clone();
 
+    tray_menu
+        .append(&open_item)
+        .expect("Fehler bei der Menü Erstellung");
     tray_menu
         .append(&quit_item)
         .expect("Fehler bei der Menü Erstellung");
@@ -46,6 +61,32 @@ fn main() {
     let ui = AppWindow::new().expect("Fehler beim erstellen vom UI");
     let ui_weak = ui.as_weak();
 
+    let storage_clone = Arc::clone(&storage);
+    let ui_weak_dialog = ui_weak.clone();
+    ui.on_open_save_dialog(move || {
+        let ui_weak_for_thread = ui_weak_dialog.clone();
+        let storage_for_thread = Arc::clone(&storage_clone);
+        std::thread::spawn(move || {
+            let result = rfd::FileDialog::new()
+                .set_title("Wähle deinen Clip Ordner aus")
+                .set_directory(std::env::current_dir().unwrap_or_default())
+                .pick_folder();
+
+            if let Some(folder_path) = result {
+                let path_str = folder_path.to_string_lossy().into_owned();
+                if let Ok(mut guard) = storage_for_thread.lock() {
+                    guard.clip_location = Some(folder_path);
+                }
+                save_storage(&storage_for_thread);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_for_thread.upgrade() {
+                        ui.set_selected_path(path_str.into());
+                    }
+                });
+            }
+        });
+    });
+
     let ui_close_handle = ui_weak.clone();
     ui.window().on_close_requested(move || {
         if let Some(ui) = ui_close_handle.upgrade() {
@@ -55,13 +96,13 @@ fn main() {
         slint::CloseRequestResponse::KeepWindowShown
     });
 
-    let ui_tray_handle = ui_weak.clone();
+    let ui_tray_handle_1 = ui_weak.clone();
     std::thread::spawn(move || {
         let tray_receiver = tray_icon::TrayIconEvent::receiver();
         while let Ok(event) = tray_receiver.recv() {
             if let tray_icon::TrayIconEvent::Click { button, .. } = event {
                 if button == tray_icon::MouseButton::Left {
-                    let ui_handle = ui_tray_handle.clone();
+                    let ui_handle = ui_tray_handle_1.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_handle.upgrade() {
                             ui.show().unwrap();
@@ -72,11 +113,25 @@ fn main() {
         }
     });
 
+    let ui_tray_handle_2 = ui_weak.clone();
+    let storage_clone_2 = Arc::clone(&storage);
     std::thread::spawn(move || {
         let menu_receiver = tray_icon::menu::MenuEvent::receiver();
+        let ui_handle = ui_tray_handle_2.clone();
+        let storage_2_for_thread = Arc::clone(&storage_clone_2);
+
         while let Ok(event) = menu_receiver.recv() {
             if event.id == quit_item_id {
+                save_storage(&storage_2_for_thread);
                 let _ = slint::invoke_from_event_loop(|| slint::quit_event_loop().unwrap());
+            } else if event.id == open_item_id {
+                let ui_handle_clone = ui_handle.clone();
+
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_handle_clone.upgrade() {
+                        ui.show().unwrap();
+                    }
+                });
             }
         }
     });
@@ -117,27 +172,6 @@ fn main() {
         let hub = google_youtube3::api::YouTube::new(client, auth);
         let path = Path::new(".").join("videos");
 
-        let mut binding = tokio::fs::OpenOptions::new();
-
-        let mut uploaded_list_file = binding
-            .create(true)
-            .append(true)
-            .read(true)
-            .open("uploaded_files.txt")
-            .await
-            .expect("Fehler beim lesen/erstellen der uploaded_files.txt Datei");
-
-        let reader = BufReader::new(&mut uploaded_list_file);
-        let mut lines = reader.lines();
-        let mut uploaded_files = Vec::<String>::new();
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .expect("Fehler beim Lesen der Zeile")
-        {
-            uploaded_files.push(line);
-        }
-
         let mut uploads_today = 0;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
 
@@ -145,7 +179,12 @@ fn main() {
             interval.tick().await;
             println!("Starte Intervall Prüfung...");
 
-            let pending_clips = get_pending_clips(&path, &uploaded_files).await;
+            let uploaded_files_clone = {
+                let guard = storage.lock().unwrap();
+                guard.uploaded_files.clone()
+            };
+
+            let pending_clips = get_pending_clips(&path, &uploaded_files_clone).await;
 
             if pending_clips.is_empty() {
                 println!("Keine neue Clips gefunden");
@@ -197,30 +236,24 @@ fn main() {
                 video_status.privacy_status = Some("unlisted".to_string());
                 video.status = Some(video_status);
 
-                upload_video(
-                    video,
-                    final_processed_video.clone(),
-                    &hub,
-                    video_file,
-                    &mut uploaded_files,
-                    &mut uploaded_list_file,
-                )
-                .await;
+                let upload_result =
+                    upload_video(video, final_processed_video.clone(), &hub, video_file).await;
 
-                for clip in clip_paket {
-                    let new_entry = path_to_string(clip);
-                    let data_formatted = format!("\n {}", &new_entry);
-                    uploaded_files.push(new_entry);
-                    uploaded_list_file
-                        .write_all(data_formatted.as_bytes())
-                        .await
-                        .expect("Fehler beim schreiben der Fertigen Liste");
+                if upload_result.is_ok() {
+                    for clip in clip_paket {
+                        let mut guard = storage.lock().unwrap();
+                        guard.uploaded_files.push(path_to_string(clip));
+                    }
+                    uploads_today += 1;
+                    save_storage(&storage);
+                } else {
+                    eprintln!(
+                        "Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert."
+                    );
                 }
 
                 let _ = tokio::fs::remove_file(combined_output).await;
                 let _ = tokio::fs::remove_file(final_processed_video).await;
-
-                uploads_today += 1;
             }
         }
     });
@@ -228,6 +261,26 @@ fn main() {
     ui.show().unwrap();
 
     slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
+}
+
+fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
+    let storage_guard = storage.lock().expect("Fehler beim Storage Guard");
+    let ron_string = ron::ser::to_string_pretty(&*storage_guard, ron::ser::PrettyConfig::default())
+        .expect("Fehler bei der RON Konvertierung");
+    std::fs::write("config.ron", ron_string).expect("Fehler bei der Config Speicherung");
+    println!("Gespeichert");
+}
+
+fn load_storage() -> Arc<Mutex<AppStorage>> {
+    let mut output = AppStorage::default();
+    let ron_content = std::fs::read_to_string("config.ron");
+    match ron_content {
+        Ok(content) => {
+            output = ron::from_str(&content).unwrap_or_default();
+        }
+        _ => {}
+    }
+    Arc::new(Mutex::new(output))
 }
 
 async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {
@@ -493,37 +546,28 @@ async fn upload_video(
     file_path: PathBuf,
     hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
     video_file: std::fs::File,
-    uploaded_files: &mut Vec<String>,
-    uploaded_list_file: &mut tokio::fs::File,
-) {
+) -> Result<(), ()> {
     println!(
-        "Starte Upload von der Datei: {:?}: ...",
+        "Starte Upload von der Datei: {:?}:...",
         file_path.file_name()
     );
 
-    if false {
-        let result = hub
-            .videos()
-            .insert(video)
-            .upload(video_file, "video/*".parse().unwrap())
-            .await;
+    let result = hub
+        .videos()
+        .insert(video)
+        .upload(video_file, "video/*".parse().unwrap())
+        .await;
 
-        match result {
-            Ok((_response, video)) => {
-                println!("Video wurde erfolgreich hochgeladen");
-                let video_id = video.id.unwrap_or_default();
-                println!("Video Link: https://www.youtube.com/watch?v={}", video_id);
-                let new_entry = path_to_string(&file_path);
-                let data_formatted = format!("\n{}", &new_entry);
-                uploaded_files.push(new_entry);
-                uploaded_list_file
-                    .write_all(data_formatted.as_bytes())
-                    .await
-                    .unwrap();
-            }
-            Err(error) => {
-                eprintln!("Ein Fehler ist aufgetreten: {:?}", error);
-            }
+    match result {
+        Ok((_response, video)) => {
+            println!("Video wurde erfolgreich hochgeladen");
+            let video_id = video.id.unwrap_or_default();
+            println!("Video Link: https://www.youtube.com/watch?v={}", video_id);
+            return Ok(());
+        }
+        Err(error) => {
+            eprintln!("Ein Fehler ist aufgetreten: {:?}", error);
+            return Err(());
         }
     }
 }

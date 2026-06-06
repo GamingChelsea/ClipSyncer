@@ -1,4 +1,4 @@
 /target
 /videos
 *.json
-uploaded_files.txt
+config.ron
