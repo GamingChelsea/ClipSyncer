@@ -20,17 +20,22 @@ type GoogleClient = hyper_util::client::legacy::Client<
 struct AppStorage {
     clip_location: Option<PathBuf>,
     uploaded_files: Vec<String>,
+    delete_original: bool,
 }
 
 fn main() {
     let storage = load_storage();
-    let current_path = {
+
+    let (current_path, current_delete_original) = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
-        guard.clip_location.clone()
+        (guard.clip_location.clone(), guard.delete_original.clone())
     };
 
     let (path_tx, mut path_rx) = tokio::sync::watch::channel(current_path);
     let path_tx = std::sync::Arc::new(path_tx);
+
+    let (del_tx, del_rx) = tokio::sync::watch::channel(current_delete_original);
+    let del_tx = std::sync::Arc::new(del_tx);
 
     let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler");
 
@@ -95,6 +100,20 @@ fn main() {
             }
         });
     });
+
+    let storage_clone_delete_original = Arc::clone(&storage);
+    let del_tx_clone = del_tx.clone();
+    ui.on_delete_original_changed(move |new_value| {
+        let _ = del_tx_clone.send(new_value);
+        let storage_for_thread = Arc::clone(&storage_clone_delete_original);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.delete_original = new_value;
+            }
+            save_storage(&storage_for_thread);
+        });
+    });
+    ui.set_delete_original(current_delete_original);
 
     let ui_close_handle = ui_weak.clone();
     ui.window().on_close_requested(move || {
@@ -197,6 +216,23 @@ fn main() {
             }
             let clip_folder = active_path.expect("Fehler bei der Ordneränderung");
 
+            if tokio::fs::read_dir(&clip_folder).await.is_err() {
+                eprintln!("Ordner nicht gefunden, Pfad zurückgesetzt");
+                {
+                    let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+                    guard.clip_location = None;
+                }
+                save_storage(&storage);
+                let _ = path_tx.send_replace(None);
+                let ui_weak_clone = ui_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_clone.upgrade() {
+                        ui.set_selected_path("Kein Pfad ausgewählt".into());
+                    }
+                });
+                continue;
+            }
+
             interval.tick().await;
             println!("Starte Intervall Prüfung...");
 
@@ -218,7 +254,7 @@ fn main() {
                 pending_clips.len()
             );
 
-            for clip_paket in pending_clips.chunks(10) {
+            for clip_paket in pending_clips.chunks(usize::min(10, pending_clips.len() / 2)) {
                 if uploads_today >= 10 {
                     println!("Upload Limit für heute erreicht");
                     break;
@@ -263,8 +299,16 @@ fn main() {
 
                 if upload_result.is_ok() {
                     for clip in clip_paket {
-                        let mut guard = storage.lock().expect("Fehler beim Aufruf von AppStorage");
-                        guard.uploaded_files.push(path_to_string(clip));
+                        let should_delete = *del_rx.borrow();
+                        {
+                            let mut guard =
+                                storage.lock().expect("Fehler beim Aufruf von AppStorage");
+                            guard.uploaded_files.push(path_to_string(clip));
+                        }
+
+                        if should_delete {
+                            let _ = tokio::fs::remove_file(clip).await;
+                        }
                     }
                     uploads_today += 1;
                     save_storage(&storage);
@@ -533,38 +577,6 @@ async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32) {
     }
 }
 
-fn process_video_file(input_file_path: &PathBuf) -> PathBuf {
-    let output_file_path = if let (Some(stem), Some(ext)) =
-        (input_file_path.file_stem(), input_file_path.extension())
-    {
-        let mut name = stem.to_os_string();
-        name.push("_converted.");
-        name.push(ext);
-        input_file_path.with_file_name(name)
-    } else {
-        input_file_path.clone()
-    };
-
-    let status = std::process::Command::new("ffmpeg")
-        .arg("-y")
-        .arg("-i")
-        .arg(input_file_path)
-        .args(["-c", "copy", "-movflags", "+faststart"])
-        .arg(&output_file_path)
-        .status()
-        .expect("FFmpeg faststart Fehler");
-
-    if status.success() {
-        println!(
-            "Videoverarbeitung abgeschlossen: {:?}",
-            output_file_path.file_name()
-        );
-    } else {
-        eprintln!("Fehler bei der Videoverarbeitung");
-    }
-    output_file_path
-}
-
 async fn upload_video(
     video: google_youtube3::api::Video,
     file_path: PathBuf,
@@ -597,6 +609,38 @@ async fn upload_video(
             return Err(());
         }
     }
+}
+
+fn process_video_file(input_file_path: &PathBuf) -> PathBuf {
+    let output_file_path = if let (Some(stem), Some(ext)) =
+        (input_file_path.file_stem(), input_file_path.extension())
+    {
+        let mut name = stem.to_os_string();
+        name.push("_converted.");
+        name.push(ext);
+        input_file_path.with_file_name(name)
+    } else {
+        input_file_path.clone()
+    };
+
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-y")
+        .arg("-i")
+        .arg(input_file_path)
+        .args(["-c", "copy", "-movflags", "+faststart"])
+        .arg(&output_file_path)
+        .status()
+        .expect("FFmpeg faststart Fehler");
+
+    if status.success() {
+        println!(
+            "Videoverarbeitung abgeschlossen: {:?}",
+            output_file_path.file_name()
+        );
+    } else {
+        eprintln!("Fehler bei der Videoverarbeitung");
+    }
+    output_file_path
 }
 
 fn path_to_string(file_path: &PathBuf) -> String {
