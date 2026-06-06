@@ -1,7 +1,52 @@
-import { LineEdit, VerticalBox } from "std-widgets.slint";
-import { Button } from "slintcn/components/button.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
+import { Button, ButtonSize } from "slintcn/components/button.slint";
+import { Card, CardPadding, CardVariant } from "slintcn/components/card.slint";
+import {
+    Text as Typography,
+    TextVariant,
+    TextTone,
+} from "slintcn/components/text.slint";
+import {
+    Separator,
+    SeparatorOrientation,
+} from "slintcn/components/separator.slint";
 
- export component AppWindow inherits Window {
+
+component SettingsEntry inherits VerticalLayout {
+    in property <string> description-text;
+    in property <string> title-text;
+    callback open_save_dialog();
+
+    height: 70px;
+    padding: 10px;
+    alignment: space-between;
+
+    Typography {
+        text: title-text;
+        font-size: 22px;
+    }
+
+    HorizontalLayout {
+        spacing: 30px;
+        VerticalLayout {
+            alignment: center;
+            Typography {
+                text: description-text;
+                font-size: 18px;
+                variant: TextVariant.body-lg;
+                tone: TextTone.muted;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: end;
+            @children
+        }
+    }
+}
+
+export component AppWindow inherits Window {
     preferred-width: 500px;
     min-width: 400px;
     preferred-height: 380px;
@@ -10,68 +55,62 @@ import { Button } from "slintcn/components/button.slint";
     background: #1a1a1a;
 
     callback open_save_dialog();
-    in property <string> selected_path: "Kein Pfad ausgewählt";
+    in-out property <string> selected_path: "Kein Pfad ausgewählt";
     in property <string> status_text: "Wartet auf Videos...";
 
-    VerticalLayout {
-        padding: 32px;
-        spacing: 20px;
-        width: min(root.width - 64px, 600px);
-        alignment: center;
+    ScrollView {
+        VerticalLayout {
+            padding: 32px;
+            spacing: 20px;
+            width: min(root.width - 64px, 600px);
+            alignment: center;
 
-        Title := Text {
-            text: "Clip Syncer";
-            font-size: 48px;
-            font-weight: 700;
-            color: #ffffff;
-            horizontal-alignment: center;
-        }
+            VerticalLayout {
+                spacing: 5px;
+                Typography {
+                    text: "Clip Syncer";
+                    font-size: 48px;
+                    font-weight: 700;
+                    color: #ffffff;
+                    horizontal-alignment: center;
+                }
 
-        Status := Text {
-            text: root.status_text;
-            font-size: 13px;
-            color: #888888;
-            horizontal-alignment: center;
-        }
-
-        Separator := Rectangle {
-            height: 1px;
-            background: #333333;
-        }
-
-        PathButton := HorizontalLayout {
-            spacing: 10px;
-            height: 36px;
-            padding-left: 10px;
-            padding-right: 10px;
-
-            PathOutline := Rectangle {
-                background: #2a2a2a;
-                border-radius: 6px;
-                border-width: 1px;
-                border-color: #3a3a3a;
-                horizontal-stretch: 8;
-
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-
-                    Path := Text {
-                        text: root.selected_path;
-                        color: #aaaaaa;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                        horizontal-alignment: center;
-                        wrap: no-wrap;
-                        overflow: elide;
-                    }
+                Typography {
+                    text: "Clip Syncer";
+                    variant: TextVariant.body-lg;
+                    horizontal-alignment: center;
+                    tone: TextTone.muted;
                 }
             }
 
-            SelectButton := Button {
-                text: "Wählen...";
-                horizontal-stretch: 1;
-                clicked => { root.open_save_dialog(); }
+            Separator { }
+
+            Card {
+                variant: CardVariant.raised;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+
+                    Typography {
+                        text: "Settings";
+                        variant: TextVariant.headline;
+                    }
+
+                    Separator { }
+
+                    SettingsEntry {
+                        title-text: "Pfad:";
+                        description-text <=> root.selected_path;
+                        open_save_dialog => { root.open_save_dialog(); }
+
+                        Button {
+                            size: ButtonSize.xs;
+                            text: "Auswählen...";
+                            clicked => { root.open_save_dialog(); }
+                        }
+                    }
+                }
             }
         }
     }

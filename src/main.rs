@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use yup_oauth2::InstalledFlowAuthenticator;
 
 slint::include_modules!();
@@ -25,6 +24,13 @@ struct AppStorage {
 
 fn main() {
     let storage = load_storage();
+    let current_path = {
+        let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
+        guard.clip_location.clone()
+    };
+
+    let (path_tx, mut path_rx) = tokio::sync::watch::channel(current_path);
+    let path_tx = std::sync::Arc::new(path_tx);
 
     let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler");
 
@@ -63,9 +69,11 @@ fn main() {
 
     let storage_clone = Arc::clone(&storage);
     let ui_weak_dialog = ui_weak.clone();
+    let path_tx_clone = path_tx.clone();
     ui.on_open_save_dialog(move || {
         let ui_weak_for_thread = ui_weak_dialog.clone();
         let storage_for_thread = Arc::clone(&storage_clone);
+        let path_tx_for_thread = path_tx_clone.clone();
         std::thread::spawn(move || {
             let result = rfd::FileDialog::new()
                 .set_title("Wähle deinen Clip Ordner aus")
@@ -75,9 +83,10 @@ fn main() {
             if let Some(folder_path) = result {
                 let path_str = folder_path.to_string_lossy().into_owned();
                 if let Ok(mut guard) = storage_for_thread.lock() {
-                    guard.clip_location = Some(folder_path);
+                    guard.clip_location = Some(folder_path.clone());
                 }
                 save_storage(&storage_for_thread);
+                let _ = path_tx_for_thread.send_replace(Some(folder_path));
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak_for_thread.upgrade() {
                         ui.set_selected_path(path_str.into());
@@ -90,7 +99,7 @@ fn main() {
     let ui_close_handle = ui_weak.clone();
     ui.window().on_close_requested(move || {
         if let Some(ui) = ui_close_handle.upgrade() {
-            ui.hide().unwrap()
+            ui.hide().expect("Fehler beim Ausblenden des Fensters")
         }
 
         slint::CloseRequestResponse::KeepWindowShown
@@ -105,7 +114,7 @@ fn main() {
                     let ui_handle = ui_tray_handle_1.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_handle.upgrade() {
-                            ui.show().unwrap();
+                            ui.show().expect("Fehler das Fenster anzuzeigen");
                         }
                     });
                 }
@@ -123,13 +132,15 @@ fn main() {
         while let Ok(event) = menu_receiver.recv() {
             if event.id == quit_item_id {
                 save_storage(&storage_2_for_thread);
-                let _ = slint::invoke_from_event_loop(|| slint::quit_event_loop().unwrap());
+                let _ = slint::invoke_from_event_loop(|| {
+                    slint::quit_event_loop().expect("Fehler den Even Loop zu schließen")
+                });
             } else if event.id == open_item_id {
                 let ui_handle_clone = ui_handle.clone();
 
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_handle_clone.upgrade() {
-                        ui.show().unwrap();
+                        ui.show().expect("Fehler das Fenster anzuzeigen");
                     }
                 });
             }
@@ -151,7 +162,7 @@ fn main() {
         .persist_tokens_to_disk("token_cache.json")
         .build()
         .await
-        .unwrap();
+        .expect("Fehler bei der Authentisierung");
 
         let scopes = &["https://www.googleapis.com/auth/youtube.upload"];
         auth.token(scopes)
@@ -170,17 +181,28 @@ fn main() {
                 .build(connector);
 
         let hub = google_youtube3::api::YouTube::new(client, auth);
-        let path = Path::new(".").join("videos");
 
         let mut uploads_today = 0;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
 
         loop {
+            let mut active_path = { path_rx.borrow().clone() };
+
+            while active_path.is_none() {
+                println!("Warte auf Pfad");
+                if path_rx.changed().await.is_err() {
+                    return;
+                }
+                active_path = path_rx.borrow().clone()
+            }
+            let clip_folder = active_path.expect("Fehler bei der Ordneränderung");
+
             interval.tick().await;
             println!("Starte Intervall Prüfung...");
 
+            let path = &clip_folder;
             let uploaded_files_clone = {
-                let guard = storage.lock().unwrap();
+                let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
                 guard.uploaded_files.clone()
             };
 
@@ -241,7 +263,7 @@ fn main() {
 
                 if upload_result.is_ok() {
                     for clip in clip_paket {
-                        let mut guard = storage.lock().unwrap();
+                        let mut guard = storage.lock().expect("Fehler beim Aufruf von AppStorage");
                         guard.uploaded_files.push(path_to_string(clip));
                     }
                     uploads_today += 1;
@@ -258,7 +280,7 @@ fn main() {
         }
     });
 
-    ui.show().unwrap();
+    ui.show().expect("Fehler das Fenster anzuzeigen");
 
     slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
 }
@@ -326,7 +348,9 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &PathBuf) {
         normalized.push(tmp);
     }
 
-    let mut list_file = tokio::fs::File::create("inputs.txt").await.unwrap();
+    let mut list_file = tokio::fs::File::create("inputs.txt")
+        .await
+        .expect("Fehler die inputs.txt zu erstellen");
     for path in &normalized {
         list_file
             .write_all(format!("file '{}'\n", path.to_string_lossy()).as_bytes())
@@ -555,7 +579,10 @@ async fn upload_video(
     let result = hub
         .videos()
         .insert(video)
-        .upload(video_file, "video/*".parse().unwrap())
+        .upload(
+            video_file,
+            "video/*".parse().expect("Fehler beim Video Upload"),
+        )
         .await;
 
     match result {
