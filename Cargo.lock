@@ -18,6 +18,7 @@ dependencies = [
  "ron",
  "rustls",
  "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "tempfile",

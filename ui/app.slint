@@ -78,7 +78,7 @@ export component AppWindow inherits Window {
         VerticalLayout {
             padding: 32px;
             spacing: 20px;
-            width: min(root.width - 64px, 650px);
+            width: min(root.width - 64px, 750px);
             alignment: center;
 
             VerticalLayout {
@@ -190,8 +190,8 @@ export component AppWindow inherits Window {
                                         Badge {
                                             text: entry.level;
                                             variant: entry.level == "ERROR" ? BadgeVariant.destructive :
-                                                entry.level == "DEBUG" ? BadgeVariant.outline :
-                                                entry.level == "WARN" ? BadgeVariant.default : BadgeVariant.secondary;
+                                                entry.level == "TRACE" ? BadgeVariant.outline :
+                                                entry.level == "Info" ? BadgeVariant.default : BadgeVariant.secondary;
                                         }
                                     }
 
@@ -199,6 +199,7 @@ export component AppWindow inherits Window {
                                         text: entry.message;
                                         horizontal-stretch: 1;
                                         wrap: word-wrap;
+                                        font-family: "monospace";
                                         color: #d1d5db;
                                         vertical-alignment: top;
                                         font-size: 13px;
