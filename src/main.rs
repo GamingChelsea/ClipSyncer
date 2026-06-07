@@ -4,10 +4,14 @@ use google_youtube3::hyper_util;
 use google_youtube3::hyper_util::client::legacy::connect::HttpConnector;
 use http_body_util::combinators::BoxBody;
 use serde::{Deserialize, Serialize};
+use slint::Model;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch::{Receiver, Sender};
+use tracing::{Subscriber, error, info};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
 use yup_oauth2::InstalledFlowAuthenticator;
 
 slint::include_modules!();
@@ -16,6 +20,25 @@ type GoogleClient = hyper_util::client::legacy::Client<
     HttpsConnector<HttpConnector>,
     BoxBody<Bytes, google_youtube3::hyper::Error>,
 >;
+
+struct SlintLayer {
+    sender: tokio::sync::mpsc::Sender<LogEntry>,
+}
+
+impl<S: Subscriber> Layer<S> for SlintLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let message = format!("{:?}", event);
+        let _ = self.sender.try_send(LogEntry {
+            timestamp: chrono::Local::now().format("%H:%M:%S").to_string().into(),
+            level: format!("{:?}", event.metadata().level()).to_string().into(),
+            message: message.to_string().into(),
+        });
+    }
+}
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, Copy)]
 enum PrivacyStatus {
@@ -62,9 +85,13 @@ fn main() {
         del_tx,
         ps_rx,
         ps_tx,
+        log_rx,
     ) = setup_channels(&storage);
 
+    info!("App startet");
+
     let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler");
+    let _guard = rt.enter();
 
     let (ui, ui_weak, _tray) = setup_ui(
         &storage,
@@ -73,6 +100,7 @@ fn main() {
         &path_tx,
         del_tx,
         ps_tx,
+        log_rx,
     );
 
     rt.spawn(async move {
@@ -90,6 +118,7 @@ fn setup_ui(
     path_tx: &Arc<Sender<Option<PathBuf>>>,
     del_tx: Arc<Sender<bool>>,
     ps_tx: Arc<Sender<PrivacyStatus>>,
+    mut log_rx: tokio::sync::mpsc::Receiver<LogEntry>,
 ) -> (AppWindow, slint::Weak<AppWindow>, tray_icon::TrayIcon) {
     let (tray_icon, open_item_id, quit_item_id) = setup_tray_icon();
 
@@ -123,6 +152,26 @@ fn setup_ui(
                 });
             }
         });
+    });
+
+    let ui_weak_log = ui_weak.clone();
+    tokio::spawn(async move {
+        while let Some(new_log) = log_rx.recv().await {
+            let ui_handle = ui_weak_log.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    let mut current_logs: Vec<LogEntry> = ui.get_logs().iter().collect();
+
+                    if current_logs.len() >= 500 {
+                        current_logs.remove(0);
+                    }
+
+                    current_logs.push(new_log);
+                    let model = std::rc::Rc::new(slint::VecModel::from(current_logs));
+                    ui.set_logs(model.into());
+                }
+            });
+        }
     });
 
     let storage_clone_delete_original = Arc::clone(storage);
@@ -221,6 +270,7 @@ fn setup_channels(
     Arc<Sender<bool>>,
     Receiver<PrivacyStatus>,
     Arc<Sender<PrivacyStatus>>,
+    tokio::sync::mpsc::Receiver<LogEntry>,
 ) {
     let (current_path, current_delete_original, current_privacy_status) = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
@@ -239,6 +289,14 @@ fn setup_channels(
 
     let (ps_tx, ps_rx) = tokio::sync::watch::channel(current_privacy_status);
     let ps_tx = std::sync::Arc::new(ps_tx);
+
+    let (log_tx, log_rx) = tokio::sync::mpsc::channel::<LogEntry>(128);
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(SlintLayer { sender: log_tx });
+
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+
     (
         current_delete_original,
         current_privacy_status,
@@ -248,6 +306,7 @@ fn setup_channels(
         del_tx,
         ps_rx,
         ps_tx,
+        log_rx,
     )
 }
 
@@ -305,14 +364,14 @@ async fn run_background_uploader(
     loop {
         let today = chrono::Local::now().date_naive();
         if today != last_upload_day {
-            println!("Neuer Tag; Upload auf 0");
+            info!("Neuer Tag; Upload auf 0");
             uploads_today = 0;
             last_upload_day = today;
         }
         let clip_folder = {
             let active_path = path_rx.borrow_and_update().clone();
             if active_path.is_none() {
-                println!("Warten auf Pfadauswahl im UI...");
+                info!("Warten auf Pfadauswahl im UI...");
                 if path_rx.changed().await.is_err() {
                     return;
                 }
@@ -322,7 +381,7 @@ async fn run_background_uploader(
         };
 
         if tokio::fs::read_dir(&clip_folder).await.is_err() {
-            eprintln!("Ordner nicht gefunden, Pfad zurückgesetzt");
+            error!("Ordner nicht gefunden, Pfad zurückgesetzt");
             {
                 let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
                 guard.clip_location = None;
@@ -342,7 +401,7 @@ async fn run_background_uploader(
             continue;
         }
 
-        println!("Prüfe Ordner: {:?}", clip_folder);
+        info!("Prüfe Ordner: {:?}", clip_folder);
         let uploaded_files_clone = {
             let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
             guard.uploaded_files.clone()
@@ -351,18 +410,18 @@ async fn run_background_uploader(
         let pending_clips = get_pending_clips(&clip_folder, &uploaded_files_clone).await;
 
         if !pending_clips.is_empty() {
-            println!(
+            info!(
                 "Es wurden {} Clips zum hochladen gefunden",
                 pending_clips.len()
             );
-            let chunk_size = usize::max(1, usize::min(20, pending_clips.len() / 2));
+            let chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today));
             for clip_paket in pending_clips.chunks(chunk_size) {
                 if uploads_today >= 6 {
-                    println!("Upload Limit für heute erreicht");
+                    info!("Upload Limit für heute erreicht");
                     break;
                 }
 
-                println!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
+                info!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
 
                 let combined_output_temp = match tempfile::Builder::new()
                     .prefix("batch_combined_")
@@ -371,14 +430,14 @@ async fn run_background_uploader(
                 {
                     Ok(file) => file,
                     Err(e) => {
-                        eprintln!("Konnte temporäre Batch Datei nicht erstellen {:?}", e);
+                        error!(error = ?e, "Konnte temporäre Batch Datei nicht erstellen");
                         continue;
                     }
                 };
                 let combined_output = combined_output_temp.path();
 
                 if !merge_multiple_videos(clip_paket, combined_output).await {
-                    eprintln!("Paket Verarbeitung wegen FFmpeg-Merge-Fehler abgebrochen");
+                    error!("Paket Verarbeitung wegen FFmpeg-Merge-Fehler abgebrochen");
                     continue;
                 }
 
@@ -389,7 +448,7 @@ async fn run_background_uploader(
                 {
                     Ok(file) => file,
                     Err(e) => {
-                        eprintln!("Konnte temporäre Final Datei nicht erstellen {:?}", e);
+                        error!(error = ?e,"Konnte temporäre Final Datei nicht erstellen");
                         continue;
                     }
                 };
@@ -397,17 +456,14 @@ async fn run_background_uploader(
                 let final_processed_video = final_processed_temp.path();
 
                 if !process_video_file(combined_output, final_processed_video).await {
-                    eprintln!("Paket Verarbeitung wegen FFmpeg Faststart Fehler abgebrochen");
+                    error!("Paket Verarbeitung wegen FFmpeg Faststart Fehler abgebrochen");
                     continue;
                 }
 
                 let video_file = match tokio::fs::File::open(final_processed_video).await {
                     Ok(file) => file,
                     Err(e) => {
-                        eprintln!(
-                            "{:?} konnte nicht geöffnet werden: {:?}",
-                            final_processed_video, e
-                        );
+                        error!(video = ?final_processed_video, error = ?e, "Datei konnte nicht geöffnet werden");
                         continue;
                     }
                 };
@@ -453,25 +509,23 @@ async fn run_background_uploader(
                     uploads_today += 1;
                     save_storage(&storage);
                 } else {
-                    eprintln!(
-                        "Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert."
-                    );
+                    error!("Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert.");
                 }
             }
         } else {
-            println!("Keine neuen Clips gefunden");
+            info!("Keine neuen Clips gefunden");
         }
 
-        println!("Warte auf den nächsten Interval (3h) oder eine Pfadänderung im UI...");
+        info!("Warte auf den nächsten Interval (3h) oder eine Pfadänderung im UI...");
         tokio::select! {
             _ = interval.tick() => {
-                println!("3 Stunden sind um. Starte geplante Überprüfung...");
+                info!("3 Stunden sind um. Starte geplante Überprüfung...");
             }
             changed_res = path_rx.changed() => {
                 if changed_res.is_err() {
                     return;
                 }
-                println!("Pfad wurde im UI geändert! Breche Warten ab und starte sofort neue Prüfung.");
+                info!("Pfad wurde im UI geändert! Breche Warten ab und starte sofort neue Prüfung.");
                 interval.reset();
             }
             Ok(_) = del_rx.changed() => {
@@ -540,7 +594,7 @@ fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
     let ron_string = ron::ser::to_string_pretty(&*storage_guard, ron::ser::PrettyConfig::default())
         .expect("Fehler bei der RON Konvertierung");
     std::fs::write("config.ron", ron_string).expect("Fehler bei der Config Speicherung");
-    println!("Gespeichert");
+    info!("Gespeichert");
 }
 
 fn load_storage() -> Arc<Mutex<AppStorage>> {
@@ -592,7 +646,7 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
     let (target_w, target_h) = match probe_resolution(&chunks[0]).await {
         Some(res) => res,
         None => {
-            eprintln!("Konnte Auflösung des ersten Clips nicht bestimmen");
+            error!("Konnte Auflösung des ersten Clips nicht bestimmen");
             return false;
         }
     };
@@ -629,7 +683,7 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
         match res {
             Ok(Ok((index, tmp_file))) => completed_result.push((index, tmp_file)),
             _ => {
-                eprintln!("Ein Clip Task ist fehlgeschlagen. Breche Paketverarbeitung ab");
+                error!("Ein Clip Task ist fehlgeschlagen. Breche Paketverarbeitung ab");
                 return false;
             }
         }
@@ -645,7 +699,7 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Fehler beim Erstellen der temporären inputs-Datei: {:?}", e);
+            error!(error = ?e, "Fehler beim Erstellen der temporären inputs-Datei:");
             return false;
         }
     };
@@ -653,7 +707,7 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
     let mut list_file = match tokio::fs::File::create(list_file_temp.path()).await {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Fehler beim Erstellen von inputs.txt per Tokio {:?}", e);
+            error!(error = ?e, "Fehler beim Erstellen von inputs.txt per Tokio");
             return false;
         }
     };
@@ -663,13 +717,13 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
         let line = format!("file '{}'\n", path_str);
 
         if let Err(e) = list_file.write_all(line.as_bytes()).await {
-            eprintln!("Fehler beim Schreiben in die Conact List {:?}", e);
+            error!(error = ?e, "Fehler beim Schreiben in die Conact List");
             return false;
         }
     }
 
     if let Err(e) = list_file.flush().await {
-        eprintln!("Fehler beim Flushen der Conact Liste: {:?}", e);
+        error!(error = ?e, "Fehler beim Flushen der Conact Liste:");
         return false;
     }
 
@@ -686,11 +740,11 @@ async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
 
     match status {
         Ok(s) if s.success() => {
-            println!("Batch erfolgreich zusammengeführt");
+            info!("Batch erfolgreich zusammengeführt");
             true
         }
         _ => {
-            eprintln!("Merge mit FFmpeg fehlgeschlagen");
+            error!("Merge mit FFmpeg fehlgeschlagen");
             false
         }
     }
@@ -715,7 +769,7 @@ async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
     let output = match output {
         Ok(out) => out,
         Err(e) => {
-            eprintln!("Fehler beim Ausführen von ffprobe: {:?}", e);
+            error!(error = ?e, "Fehler beim Ausführen von ffprobe");
             return None;
         }
     };
@@ -724,7 +778,7 @@ async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
     let line = match text.lines().next() {
         Some(l) => l,
         None => {
-            eprintln!("ffprobe hat keine Ausgabe geliefert (Datei evtl. beschädigt)");
+            error!("ffprobe hat keine Ausgabe geliefert (Datei evtl. beschädigt)");
             return None;
         }
     };
@@ -762,7 +816,7 @@ async fn probe_audio_track_count(path: &Path) -> usize {
 
 async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32) -> bool {
     let audio_tracks = probe_audio_track_count(input).await;
-    println!(
+    info!(
         "Normalisiere {:?}  →  {}×{}  ({} Audiospur/en)",
         input.file_name().unwrap_or_default(),
         width,
@@ -847,14 +901,13 @@ async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32) ->
     cmd.arg(output);
     match cmd.status().await {
         Ok(status) if status.success() => {
-            println!("✓  {:?}", output.file_name().unwrap_or_default());
+            info!("✓  {:?}", output.file_name().unwrap_or_default());
             true
         }
         _ => {
-            eprintln!(
-                "✗  Normalisierung fehlgeschlagen: {:?}",
-                input.file_name().unwrap_or_default()
-            );
+            error!(
+                filename = ?input.file_name().unwrap_or_default(),
+                "✗  Normalisierung fehlgeschlagen:");
             false
         }
     }
@@ -866,7 +919,7 @@ async fn upload_video(
     hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
     video_file: tokio::fs::File,
 ) -> Result<(), ()> {
-    println!(
+    info!(
         "Starte Upload von der Datei: {:?}:...",
         file_path.file_name()
     );
@@ -882,13 +935,13 @@ async fn upload_video(
 
     match result {
         Ok((_response, video)) => {
-            println!("Video wurde erfolgreich hochgeladen");
+            info!("Video wurde erfolgreich hochgeladen");
             let video_id = video.id.unwrap_or_default();
-            println!("Video Link: https://www.youtube.com/watch?v={}", video_id);
+            info!("Video Link: https://www.youtube.com/watch?v={}", video_id);
             return Ok(());
         }
         Err(error) => {
-            eprintln!("Ein Fehler ist aufgetreten: {:?}", error);
+            error!(error = ?error, "Ein Fehler ist aufgetreten:");
             return Err(());
         }
     }
@@ -906,14 +959,14 @@ async fn process_video_file(input_file_path: &Path, output_file_path: &Path) -> 
 
     match status {
         Ok(s) if s.success() => {
-            println!(
+            info!(
                 "Videoverarbeitung abgeschlossen: {:?}",
                 output_file_path.file_name()
             );
             true
         }
         _ => {
-            eprintln!("Fehler bei der Videoverarbeitung (faststart)");
+            error!("Fehler bei der Videoverarbeitung (faststart)");
             false
         }
     }

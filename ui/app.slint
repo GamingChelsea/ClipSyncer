@@ -1,4 +1,4 @@
-import { LineEdit, ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView, ListView } from "std-widgets.slint";
 import { Button, ButtonSize } from "slintcn/components/button.slint";
 import { Card, CardPadding, CardVariant } from "slintcn/components/card.slint";
 import { Switch } from "slintcn/components/switch.slint";
@@ -12,50 +12,60 @@ import {
     Separator,
     SeparatorOrientation,
 } from "slintcn/components/separator.slint";
+import { Collapsible } from "slintcn/components/collapsible.slint";
+import { Badge, BadgeVariant } from "slintcn/components/badge.slint";
 
+export struct LogEntry {
+    timestamp: string,
+    level: string,
+    message: string,
+}
 
-component SettingsEntry inherits VerticalLayout {
+component SettingsEntry inherits Rectangle {
     in property <string> description-text;
     in property <string> title-text;
 
-    height: 70px;
-    padding: 10px;
-    alignment: space-between;
-
-    Typography {
-        text: title-text;
-        font-size: 22px;
-    }
+    height: 60px;
 
     HorizontalLayout {
-        spacing: 30px;
+        padding: 8px;
+        spacing: 20px;
         alignment: space-between;
+
         VerticalLayout {
             alignment: center;
+            spacing: 4px;
+
+            Typography {
+                text: title-text;
+                font-size: 15px;
+                font-weight: 600;
+            }
+
             Typography {
                 text: description-text;
-                font-size: 18px;
-                variant: TextVariant.body-lg;
+                font-size: 13px;
                 tone: TextTone.muted;
                 overflow: elide;
             }
         }
 
         VerticalLayout {
-            alignment: end;
+            alignment: center;
             @children
         }
     }
 }
 
 export component AppWindow inherits Window {
-    preferred-width: 500px;
-    min-width: 400px;
-    preferred-height: 380px;
+    preferred-width: 550px;
+    min-width: 450px;
+    preferred-height: 400px;
     min-height: 280px;
     title: "Clip Syncer";
     background: #1a1a1a;
 
+    in property <[LogEntry]> logs: [];
     callback open_save_dialog();
     in-out property <string> selected_path: "Kein Pfad ausgewählt";
     in property <string> status_text: "Wartet auf Videos...";
@@ -68,21 +78,21 @@ export component AppWindow inherits Window {
         VerticalLayout {
             padding: 32px;
             spacing: 20px;
-            width: min(root.width - 64px, 600px);
+            width: min(root.width - 64px, 650px);
             alignment: center;
 
             VerticalLayout {
                 spacing: 5px;
                 Typography {
                     text: "Clip Syncer";
-                    font-size: 48px;
+                    font-size: 40px;
                     font-weight: 700;
                     color: #ffffff;
                     horizontal-alignment: center;
                 }
 
                 Typography {
-                    text: "Clip Syncer";
+                    text: "Synchronisiert Clips aus dem Ordner und lädt sie hoch";
                     variant: TextVariant.body-lg;
                     horizontal-alignment: center;
                     tone: TextTone.muted;
@@ -98,47 +108,102 @@ export component AppWindow inherits Window {
                     padding: 16px;
                     spacing: 10px;
 
-                    Typography {
-                        text: "Settings";
-                        variant: TextVariant.headline;
-                    }
+                    Collapsible {
+                        title: "Einstellungen";
+                        clip: true;
 
-                    Separator { }
+                        SettingsEntry {
+                            title-text: "Pfad:";
+                            description-text <=> selected_path;
 
-                    SettingsEntry {
-                        title-text: "Pfad:";
-                        description-text <=> selected_path;
+                            Button {
+                                size: ButtonSize.sm;
+                                text: "Auswählen...";
+                                clicked => { root.open_save_dialog(); }
+                            }
+                        }
 
-                        Button {
-                            size: ButtonSize.xs;
-                            text: "Auswählen...";
-                            clicked => { root.open_save_dialog(); }
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Sichtbarkeit:";
+                            description-text: "Sichtbarkeit des Clips auf YouTube";
+
+                            Select {
+                                items: [
+                                    { label: "Öffentlich", value: "public" },
+                                    { label: "Nicht Gelistet", value: "unlisted" },
+                                    { label: "Privat", value: "private" }
+                                ];
+                                selected-index <=> visibility_selection_index;
+                                changed(i) => { privacy_change(i) }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Löschung:";
+                            description-text: "Lokale Originale löschen nach dem Upload?";
+
+                            Switch {
+                                checked <=> delete_original;
+                                toggled => {
+                                    root.delete_original_changed(root.delete_original);
+                                }
+                            }
                         }
                     }
 
                     Separator { }
 
-                    SettingsEntry {
-                        title-text: "Sichtbarkeit:";
-                        description-text: "Sichtbarkeit des hochgeladene Clips?";
+                    Collapsible {
+                        title: "Log Viewer";
+                        clip: true;
 
-                        Select {
-                            items: [{ label: "Öffentlich" }, { label: "Nicht Gelistet" }, { label: "Privat" }];
-                            selected-index <=> visibility_selection_index;
-                            changed(i) => { privacy_change(i) }
-                        }
-                    }
+                        ListView {
+                            height: 250px;
 
-                    Separator { }
+                            for entry in root.logs: Rectangle {
+                                border-radius: 4px;
 
-                    SettingsEntry {
-                        title-text: "Löschung:";
-                        description-text: "Soll der Original Clip gelöscht werden?";
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    padding-top: 6px;
+                                    padding-bottom: 6px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
 
-                        Switch {
-                            checked <=> delete_original;
-                            toggled => {
-                                root.delete_original_changed(root.delete_original);
+                                    Text {
+                                        text: entry.timestamp;
+                                        color: #888888;
+                                        width: 65px;
+                                        vertical-alignment: top;
+                                        font-family: "monospace";
+                                        font-size: 12px;
+                                    }
+
+                                    VerticalLayout {
+                                        width: 80px;
+                                        alignment: start;
+
+                                        Badge {
+                                            text: entry.level;
+                                            variant: entry.level == "ERROR" ? BadgeVariant.destructive :
+                                                entry.level == "DEBUG" ? BadgeVariant.outline :
+                                                entry.level == "WARN" ? BadgeVariant.default : BadgeVariant.secondary;
+                                        }
+                                    }
+
+                                    Text {
+                                        text: entry.message;
+                                        horizontal-stretch: 1;
+                                        wrap: word-wrap;
+                                        color: #d1d5db;
+                                        vertical-alignment: top;
+                                        font-size: 13px;
+                                    }
+                                }
                             }
                         }
                     }
