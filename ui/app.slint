@@ -2,6 +2,7 @@ import { LineEdit, ScrollView } from "std-widgets.slint";
 import { Button, ButtonSize } from "slintcn/components/button.slint";
 import { Card, CardPadding, CardVariant } from "slintcn/components/card.slint";
 import { Switch } from "slintcn/components/switch.slint";
+import { Select, SelectItem } from "slintcn/components/select.slint";
 import {
     Text as Typography,
     TextVariant,
@@ -16,7 +17,6 @@ import {
 component SettingsEntry inherits VerticalLayout {
     in property <string> description-text;
     in property <string> title-text;
-    callback open_save_dialog();
 
     height: 70px;
     padding: 10px;
@@ -61,6 +61,8 @@ export component AppWindow inherits Window {
     in property <string> status_text: "Wartet auf Videos...";
     callback delete_original_changed(bool);
     in-out property <bool> delete_original: false;
+    in-out property <int> visibility_selection_index;
+    callback privacy_change(int);
 
     ScrollView {
         VerticalLayout {
@@ -105,8 +107,7 @@ export component AppWindow inherits Window {
 
                     SettingsEntry {
                         title-text: "Pfad:";
-                        description-text <=> root.selected_path;
-                        open_save_dialog => { root.open_save_dialog(); }
+                        description-text <=> selected_path;
 
                         Button {
                             size: ButtonSize.xs;
@@ -118,9 +119,21 @@ export component AppWindow inherits Window {
                     Separator { }
 
                     SettingsEntry {
+                        title-text: "Sichtbarkeit:";
+                        description-text: "Sichtbarkeit des hochgeladene Clips?";
+
+                        Select {
+                            items: [{ label: "Öffentlich" }, { label: "Nicht Gelistet" }, { label: "Privat" }];
+                            selected-index <=> visibility_selection_index;
+                            changed(i) => { privacy_change(i) }
+                        }
+                    }
+
+                    Separator { }
+
+                    SettingsEntry {
                         title-text: "Löschung:";
                         description-text: "Soll der Original Clip gelöscht werden?";
-                        open_save_dialog => { root.open_save_dialog(); }
 
                         Switch {
                             checked <=> delete_original;

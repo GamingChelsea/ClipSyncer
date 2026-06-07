@@ -19,6 +19,8 @@ image = "0.25.10"
 slint = { version = "1.16", features = ["unstable-winit-030"] }
 rfd = "0.17.2"
 ron = "0.12.1"
+tempfile = "3.27.0"
+chrono = "0.4.45"
 
 [build-dependencies]
 slint-build = "1.16"
