@@ -28,18 +28,6 @@ struct MessageVisitor {
 }
 
 impl Visit for MessageVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
-        if field.name() == "message" {
-            self.message = format!("{:?}", value);
-        } else {
-            if !self.extra_field.is_empty() {
-                self.extra_field.push_str(", ");
-            }
-            self.extra_field
-                .push_str(&format!("{}={:?}", field.name(), value));
-        }
-    }
-
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.message = value.to_string();
@@ -49,6 +37,18 @@ impl Visit for MessageVisitor {
             }
             self.extra_field
                 .push_str(&format!("{}={}", field.name(), value));
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn core::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{:?}", value);
+        } else {
+            if !self.extra_field.is_empty() {
+                self.extra_field.push_str(", ");
+            }
+            self.extra_field
+                .push_str(&format!("{}={:?}", field.name(), value));
         }
     }
 }
@@ -125,7 +125,8 @@ struct AppStorage {
     uploaded_files: Vec<String>,
     delete_original: bool,
     privacy_status: PrivacyStatus,
-    last_upload_date: chrono::NaiveDate,
+    last_upload_date: chrono::DateTime<chrono::Local>,
+    uploads_today: usize,
 }
 
 fn main() {
@@ -276,12 +277,7 @@ fn setup_ui(
         while let Ok(event) = tray_receiver.recv() {
             if let tray_icon::TrayIconEvent::Click { button, .. } = event {
                 if button == tray_icon::MouseButton::Left {
-                    let ui_handle = ui_tray_handle_1.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_handle.upgrade() {
-                            ui.show().expect("Fehler das Fenster anzuzeigen");
-                        }
-                    });
+                    show_slint_window(ui_tray_handle_1.clone());
                 }
             }
         }
@@ -309,17 +305,19 @@ fn setup_ui(
                     slint::quit_event_loop().expect("Fehler den Event Loop zu schließen")
                 });
             } else if event.id == open_item_id {
-                let ui_handle_clone = ui_handle.clone();
-
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_handle_clone.upgrade() {
-                        ui.show().expect("Fehler das Fenster anzuzeigen");
-                    }
-                });
+                show_slint_window(ui_handle.clone());
             }
         }
     });
     (ui, ui_weak, tray_icon)
+}
+
+fn show_slint_window(ui_handle: slint::Weak<AppWindow>) {
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_handle.upgrade() {
+            ui.show().expect("Fehler das Fenster anzuzeigen");
+        }
+    });
 }
 
 fn setup_channels(
@@ -345,13 +343,13 @@ fn setup_channels(
     };
 
     let (path_tx, path_rx) = tokio::sync::watch::channel(current_path);
-    let path_tx = std::sync::Arc::new(path_tx);
+    let path_tx = Arc::new(path_tx);
 
     let (del_tx, del_rx) = tokio::sync::watch::channel(current_delete_original);
-    let del_tx = std::sync::Arc::new(del_tx);
+    let del_tx = Arc::new(del_tx);
 
     let (ps_tx, ps_rx) = tokio::sync::watch::channel(current_privacy_status);
-    let ps_tx = std::sync::Arc::new(ps_tx);
+    let ps_tx = Arc::new(ps_tx);
 
     let (log_tx, log_rx) = tokio::sync::mpsc::channel::<LogEntry>(128);
     let subscriber = tracing_subscriber::registry()
@@ -415,168 +413,193 @@ async fn run_background_uploader(
 
     let hub = google_youtube3::api::YouTube::new(client, auth);
 
-    let mut last_upload_day = storage
-        .lock()
-        .expect("Fehler auf AppStorage zuzugreifen")
-        .last_upload_date;
     let mut uploads_today = 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
+    let mut last_upload = chrono::DateTime::default();
+    if let Ok(storage_ok) = storage.lock() {
+        last_upload = storage_ok.last_upload_date;
+        uploads_today = storage_ok.uploads_today;
+    }
 
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
     interval.tick().await;
 
     loop {
-        let today = chrono::Local::now().date_naive();
-        if today != last_upload_day {
+        let now = chrono::Local::now();
+
+        if now.date_naive() != last_upload.date_naive() {
             info!("Neuer Tag; Upload auf 0");
             uploads_today = 0;
-            last_upload_day = today;
+            last_upload = now;
+            if let Ok(mut storage_ok) = storage.lock() {
+                storage_ok.last_upload_date = now;
+                storage_ok.uploads_today = uploads_today;
+            }
+            save_storage(&storage);
         }
-        let clip_folder = {
-            let active_path = path_rx.borrow_and_update().clone();
-            if active_path.is_none() {
-                info!("Warten auf Pfadauswahl im UI...");
-                if path_rx.changed().await.is_err() {
-                    return;
+        if now - last_upload >= chrono::Duration::hours(3) {
+            let clip_folder = {
+                let active_path = path_rx.borrow_and_update().clone();
+                if active_path.is_none() {
+                    info!("Warten auf Pfadauswahl im UI...");
+                    if path_rx.changed().await.is_err() {
+                        return;
+                    }
+                    continue;
                 }
+                active_path.unwrap()
+            };
+
+            if tokio::fs::read_dir(&clip_folder).await.is_err() {
+                error!("Ordner nicht gefunden, Pfad zurückgesetzt");
+                {
+                    let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+                    guard.clip_location = None;
+                }
+                let storage_clone = Arc::clone(&storage);
+                tokio::task::spawn_blocking(move || save_storage(&storage_clone))
+                    .await
+                    .unwrap();
+
+                let _ = path_tx.send_replace(None);
+                let ui_weak_clone = ui_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_clone.upgrade() {
+                        ui.set_selected_path("Kein Pfad ausgewählt".into());
+                    }
+                });
                 continue;
             }
-            active_path.unwrap()
-        };
 
-        if tokio::fs::read_dir(&clip_folder).await.is_err() {
-            error!("Ordner nicht gefunden, Pfad zurückgesetzt");
-            {
-                let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
-                guard.clip_location = None;
-            }
-            let storage_clone = Arc::clone(&storage);
-            tokio::task::spawn_blocking(move || save_storage(&storage_clone))
-                .await
-                .unwrap();
+            info!("Prüfe Ordner: {:?}", clip_folder);
+            let uploaded_files_clone = {
+                let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+                guard.uploaded_files.clone()
+            };
 
-            let _ = path_tx.send_replace(None);
-            let ui_weak_clone = ui_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak_clone.upgrade() {
-                    ui.set_selected_path("Kein Pfad ausgewählt".into());
-                }
-            });
-            continue;
-        }
+            let pending_clips = get_pending_clips(&clip_folder, &uploaded_files_clone).await;
 
-        info!("Prüfe Ordner: {:?}", clip_folder);
-        let uploaded_files_clone = {
-            let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
-            guard.uploaded_files.clone()
-        };
+            if uploads_today >= 6 {
+                info!("Upload Limit für heute erreicht (6/6). Warte auf nächsten Tag.");
+            } else if !pending_clips.is_empty() {
+                info!(
+                    "Es wurden {} Clips zum hochladen gefunden",
+                    pending_clips.len()
+                );
 
-        let pending_clips = get_pending_clips(&clip_folder, &uploaded_files_clone).await;
-
-        if !pending_clips.is_empty() {
-            info!(
-                "Es wurden {} Clips zum hochladen gefunden",
-                pending_clips.len()
-            );
-            let chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today));
-            for clip_paket in pending_clips.chunks(chunk_size) {
-                if uploads_today >= 6 {
-                    info!("Upload Limit für heute erreicht");
-                    break;
-                }
-
-                info!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
-
-                let combined_output_temp = match tempfile::Builder::new()
-                    .prefix("batch_combined_")
-                    .suffix(".mp4")
-                    .tempfile()
-                {
-                    Ok(file) => file,
-                    Err(e) => {
-                        error!(error = ?e, "Konnte temporäre Batch Datei nicht erstellen");
-                        continue;
+                let chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today));
+                for clip_paket in pending_clips.chunks(chunk_size) {
+                    if uploads_today >= 6 {
+                        break;
                     }
-                };
-                let combined_output = combined_output_temp.path();
 
-                if !merge_multiple_videos(clip_paket, combined_output).await {
-                    error!("Paket Verarbeitung wegen FFmpeg-Merge-Fehler abgebrochen");
-                    continue;
-                }
+                    info!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
 
-                let final_processed_temp = match tempfile::Builder::new()
-                    .prefix("batch_final_")
-                    .suffix(".mp4")
-                    .tempfile()
-                {
-                    Ok(file) => file,
-                    Err(e) => {
-                        error!(error = ?e,"Konnte temporäre Final Datei nicht erstellen");
-                        continue;
-                    }
-                };
-
-                let final_processed_video = final_processed_temp.path();
-
-                if !process_video_file(combined_output, final_processed_video).await {
-                    error!("Paket Verarbeitung wegen FFmpeg Faststart Fehler abgebrochen");
-                    continue;
-                }
-
-                let video_file = match tokio::fs::File::open(final_processed_video).await {
-                    Ok(file) => file,
-                    Err(e) => {
-                        error!(video = ?final_processed_video, error = ?e, "Datei konnte nicht geöffnet werden");
-                        continue;
-                    }
-                };
-
-                let mut video = google_youtube3::api::Video::default();
-                let mut details = google_youtube3::api::VideoSnippet::default();
-                details.title = Some(format!(
-                    "Clip Compilation - {}",
-                    path_to_string(&clip_paket[0])
-                ));
-
-                let names: Vec<String> = clip_paket.iter().map(path_to_string).collect();
-                let names_combined = names.join(", ");
-                details.description = Some(format!(
-                    "Clip Compilation von den Videodateien: {}",
-                    names_combined
-                ));
-
-                details.category_id = Some("22".to_string());
-                video.snippet = Some(details);
-
-                let mut video_status = google_youtube3::api::VideoStatus::default();
-                video_status.privacy_status = Some(ps_rx.borrow().to_useable_string().to_string());
-                video.status = Some(video_status);
-
-                let upload_result =
-                    upload_video(video, final_processed_video.to_path_buf(), &hub, video_file)
-                        .await;
-
-                if upload_result.is_ok() {
-                    for clip in clip_paket {
-                        let should_delete = *del_rx.borrow();
-                        {
-                            let mut guard =
-                                storage.lock().expect("Fehler beim Aufruf von AppStorage");
-                            guard.uploaded_files.push(path_to_string(clip));
+                    let combined_output_temp = match tempfile::Builder::new()
+                        .prefix("batch_combined_")
+                        .suffix(".mp4")
+                        .tempfile()
+                    {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!(error = ?e, "Konnte temporäre Batch Datei nicht erstellen");
+                            continue;
                         }
+                    };
+                    let combined_output = combined_output_temp.path();
 
-                        if should_delete {
-                            let _ = tokio::fs::remove_file(clip).await;
-                        }
+                    if !merge_multiple_videos(clip_paket, combined_output).await {
+                        error!("Paket Verarbeitung wegen FFmpeg-Merge-Fehler abgebrochen");
+                        continue;
                     }
-                    uploads_today += 1;
-                    save_storage(&storage);
-                } else {
-                    error!("Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert.");
+
+                    let final_processed_temp = match tempfile::Builder::new()
+                        .prefix("batch_final_")
+                        .suffix(".mp4")
+                        .tempfile()
+                    {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!(error = ?e,"Konnte temporäre Final Datei nicht erstellen");
+                            continue;
+                        }
+                    };
+
+                    let final_processed_video = final_processed_temp.path();
+
+                    if !process_video_file(combined_output, final_processed_video).await {
+                        error!("Paket Verarbeitung wegen FFmpeg Faststart Fehler abgebrochen");
+                        continue;
+                    }
+
+                    let video_file = match tokio::fs::File::open(final_processed_video).await {
+                        Ok(file) => file,
+                        Err(e) => {
+                            error!(video = ?final_processed_video, error = ?e, "Datei konnte nicht geöffnet werden");
+                            continue;
+                        }
+                    };
+
+                    let mut video = google_youtube3::api::Video::default();
+                    let mut details = google_youtube3::api::VideoSnippet::default();
+                    details.title = Some(format!(
+                        "Clip Compilation - {}",
+                        path_to_string(&clip_paket[0])
+                    ));
+
+                    let names: Vec<String> = clip_paket.iter().map(path_to_string).collect();
+                    let names_combined = names.join(", ");
+                    details.description = Some(format!(
+                        "Clip Compilation von den Videodateien: {}",
+                        names_combined
+                    ));
+
+                    details.category_id = Some("22".to_string());
+                    video.snippet = Some(details);
+
+                    let mut video_status = google_youtube3::api::VideoStatus::default();
+                    video_status.privacy_status =
+                        Some(ps_rx.borrow().to_useable_string().to_string());
+                    video.status = Some(video_status);
+
+                    let upload_result =
+                        upload_video(video, final_processed_video.to_path_buf(), &hub, video_file)
+                            .await;
+
+                    if upload_result.is_ok() {
+                        for clip in clip_paket {
+                            let should_delete = *del_rx.borrow();
+                            {
+                                let mut guard =
+                                    storage.lock().expect("Fehler beim Aufruf von AppStorage");
+                                guard.uploaded_files.push(path_to_string(clip));
+                            }
+
+                            if should_delete {
+                                let _ = tokio::fs::remove_file(clip).await;
+                            }
+                        }
+                        uploads_today += 1;
+                        last_upload = chrono::Local::now();
+                        if let Ok(mut storage_a) = storage.lock() {
+                            storage_a.uploads_today = uploads_today;
+                            storage_a.last_upload_date = last_upload;
+                        };
+                        save_storage(&storage);
+                    } else {
+                        error!(
+                            "Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert."
+                        );
+                    }
                 }
+            } else {
+                info!("Keine neuen Clips gefunden");
             }
         } else {
-            info!("Keine neuen Clips gefunden");
+            let remaining_time = chrono::Duration::hours(3) - (now - last_upload);
+            info!(
+                "Letzter Upload ist erst {} Minuten her.",
+                remaining_time.num_minutes()
+            );
         }
 
         info!("Warte auf den nächsten Interval (3h) oder eine Pfadänderung im UI...");
@@ -661,7 +684,14 @@ fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
 }
 
 fn load_storage() -> Arc<Mutex<AppStorage>> {
-    let mut output = AppStorage::default();
+    let mut output = AppStorage {
+        clip_location: None,
+        uploaded_files: vec![],
+        delete_original: false,
+        privacy_status: PrivacyStatus::Unlisted,
+        last_upload_date: chrono::Local::now(),
+        uploads_today: 0,
+    };
     let ron_content = std::fs::read_to_string("config.ron");
     match ron_content {
         Ok(content) => {
@@ -1001,11 +1031,11 @@ async fn upload_video(
             info!("Video wurde erfolgreich hochgeladen");
             let video_id = video.id.unwrap_or_default();
             info!("Video Link: https://www.youtube.com/watch?v={}", video_id);
-            return Ok(());
+            Ok(())
         }
         Err(error) => {
             error!(error = ?error, "Ein Fehler ist aufgetreten:");
-            return Err(());
+            Err(())
         }
     }
 }
