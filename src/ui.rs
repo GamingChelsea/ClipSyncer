@@ -1,9 +1,9 @@
+use crate::storage::{AppStorage, PrivacyStatus, VideoEncoder, save_storage};
+use crate::{AppWindow, LogEntry, VideoChannelEntry, VideoEntry};
+use slint::{ComponentHandle, Model, SharedPixelBuffer};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch::Sender;
-use slint::{ComponentHandle, Model};
-use crate::{AppWindow, LogEntry};
-use crate::storage::{AppStorage, PrivacyStatus, VideoEncoder, save_storage};
 
 pub fn setup_ui(
     storage: &Arc<Mutex<AppStorage>>,
@@ -13,6 +13,8 @@ pub fn setup_ui(
     del_tx: Arc<Sender<bool>>,
     ps_tx: Arc<Sender<PrivacyStatus>>,
     mut log_rx: tokio::sync::mpsc::Receiver<LogEntry>,
+    video_tx: &Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
+    mut video_rx: tokio::sync::mpsc::Receiver<VideoChannelEntry>,
 ) -> (AppWindow, slint::Weak<AppWindow>, tray_icon::TrayIcon) {
     let (tray_icon, open_item_id, quit_item_id) = setup_tray_icon();
 
@@ -48,6 +50,22 @@ pub fn setup_ui(
         });
     });
 
+    let storage_upload = Arc::clone(storage);
+    let path_tx_upload = path_tx.clone();
+    ui.on_upload_now(move || {
+        let storage_for_thread = Arc::clone(&storage_upload);
+        let path_tx_for_thread = path_tx_upload.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut storage_ok) = storage_for_thread.lock() {
+                storage_ok.upload_all = true;
+                storage_ok.last_upload_date = chrono::Local::now() - chrono::Duration::hours(4);
+                if let Some(path) = &storage_ok.clip_location {
+                    let _ = &path_tx_for_thread.send_replace(Some(path.clone()));
+                }
+            }
+        });
+    });
+
     let ui_weak_log = ui_weak.clone();
     tokio::spawn(async move {
         while let Some(new_log) = log_rx.recv().await {
@@ -68,6 +86,58 @@ pub fn setup_ui(
         }
     });
 
+    let ui_weak_videos = ui_weak.clone();
+    tokio::spawn(async move {
+        while let Some(entry) = video_rx.recv().await {
+            let ui_handle = ui_weak_videos.clone();
+
+            let img_bytes: Option<Vec<u8>> = if !entry.thumbnail_url.is_empty() {
+                match reqwest::get(&entry.thumbnail_url).await {
+                    Ok(r) => r.bytes().await.ok().map(|b| b.to_vec()),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
+            let title = entry.title.clone();
+            let link = entry.link.clone();
+            let visibility = entry.visibility.clone();
+
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_handle.upgrade() {
+                    let thumbnail = img_bytes
+                        .and_then(|bytes| image::load_from_memory(&bytes).ok())
+                        .map(|img| {
+                            let rgba = img.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            slint::Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+                                rgba.as_raw(),
+                                w,
+                                h,
+                            ))
+                        })
+                        .unwrap_or_default();
+
+                    let video_entry = VideoEntry {
+                        title: title.into(),
+                        link: link.into(),
+                        visibility: visibility.into(),
+                        thumbnail,
+                    };
+
+                    let mut current_videos: Vec<VideoEntry> = ui.get_videos().iter().collect();
+                    if current_videos.len() >= 50 {
+                        current_videos.remove(0);
+                    }
+                    current_videos.push(video_entry);
+                    let model = std::rc::Rc::new(slint::VecModel::from(current_videos));
+                    ui.set_videos(model.into());
+                }
+            });
+        }
+    });
+
     let storage_clone_delete_original = Arc::clone(storage);
     let del_tx_clone = del_tx.clone();
     ui.on_delete_original_changed(move |new_value| {
@@ -81,6 +151,10 @@ pub fn setup_ui(
         });
     });
     ui.set_delete_original(current_delete_original);
+
+    ui.on_link_clicked(move |link| {
+        let _ = webbrowser::open(&link.as_str());
+    });
 
     let storage_clone_privacy_status = Arc::clone(storage);
     let ps_tx_clone = ps_tx.clone();
@@ -168,6 +242,47 @@ pub fn setup_ui(
             }
         }
     });
+
+    for video in storage
+        .clone()
+        .lock()
+        .expect("Fehler beim Lesen von AppStorage")
+        .uploaded_videos
+        .iter()
+    {
+        let video_id = video.id.clone().unwrap_or_default();
+        let link = format!("https://www.youtube.com/watch?v={}", video_id);
+        let mut title = String::from("Fehler");
+        let mut privacy = PrivacyStatus::Private;
+        if let Some(snippet) = &video.snippet {
+            title = snippet.title.clone().unwrap_or_default();
+        };
+        if let Some(status) = &video.status {
+            if let Some(visibility) = &status.privacy_status {
+                match visibility.as_str() {
+                    "public" => privacy = PrivacyStatus::Public,
+                    "unlisted" => privacy = PrivacyStatus::Unlisted,
+                    _ => privacy = PrivacyStatus::Private,
+                }
+            }
+        };
+        let thumbnail_url = video
+            .snippet
+            .as_ref()
+            .and_then(|s| s.thumbnails.as_ref())
+            .and_then(|t| t.medium.as_ref())
+            .and_then(|m| m.url.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let video_entry = VideoChannelEntry {
+            title,
+            link,
+            visibility: privacy.to_useable_string().to_string(),
+            thumbnail_url,
+        };
+        let _ = video_tx.try_send(video_entry);
+    }
+
     (ui, ui_weak, tray_icon)
 }
 

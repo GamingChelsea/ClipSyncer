@@ -129,12 +129,12 @@ pub async fn merge_multiple_videos(
 
     let status = tokio::process::Command::new("ffmpeg")
         .arg("-y")
+        .args(["-loglevel", "error"])
         .args(["-f", "concat", "-safe", "0", "-i"])
         .arg(list_file_temp.path())
         .args(["-c", "copy"])
         .arg(output_path)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
         .status()
         .await;
 
@@ -250,7 +250,11 @@ pub async fn normalize_clip(
     };
 
     let mut cmd = tokio::process::Command::new("ffmpeg");
-    cmd.arg("-y").arg("-i").arg(input);
+    cmd.arg("-y")
+        .args(["-loglevel", "error"])
+        .arg("-i")
+        .arg(input)
+        .stdout(std::process::Stdio::null());
 
     match audio_tracks {
         0 => {
@@ -328,10 +332,12 @@ pub async fn normalize_clip(
 pub async fn process_video_file(input_file_path: &Path, output_file_path: &Path) -> bool {
     let status = tokio::process::Command::new("ffmpeg")
         .arg("-y")
+        .args(["-loglevel", "error"])
         .arg("-i")
         .arg(input_file_path)
         .args(["-c", "copy", "-movflags", "+faststart"])
         .arg(&output_file_path)
+        .stdout(std::process::Stdio::null())
         .status()
         .await;
 

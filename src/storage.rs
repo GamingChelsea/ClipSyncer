@@ -1,4 +1,3 @@
-use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -57,7 +56,9 @@ impl PrivacyStatus {
 pub struct AppStorage {
     pub clip_location: Option<PathBuf>,
     pub uploaded_files: Vec<String>,
+    pub uploaded_videos: Vec<google_youtube3::api::Video>,
     pub delete_original: bool,
+    pub upload_all: bool,
     pub privacy_status: PrivacyStatus,
     pub last_upload_date: chrono::DateTime<chrono::Local>,
     pub uploads_today: usize,
@@ -76,7 +77,9 @@ pub fn load_storage() -> Arc<Mutex<AppStorage>> {
     let mut output = AppStorage {
         clip_location: None,
         uploaded_files: vec![],
+        uploaded_videos: vec![],
         delete_original: false,
+        upload_all: false,
         privacy_status: PrivacyStatus::Unlisted,
         last_upload_date: chrono::Local::now() - chrono::Duration::hours(4),
         uploads_today: 0,

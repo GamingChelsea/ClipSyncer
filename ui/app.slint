@@ -1,5 +1,9 @@
 import { LineEdit, ScrollView, ListView } from "std-widgets.slint";
-import { Button, ButtonSize } from "slintcn/components/button.slint";
+import {
+    Button,
+    ButtonSize,
+    ButtonVariant,
+} from "slintcn/components/button.slint";
 import { Card, CardPadding, CardVariant } from "slintcn/components/card.slint";
 import { Switch } from "slintcn/components/switch.slint";
 import { Select, SelectItem } from "slintcn/components/select.slint";
@@ -14,11 +18,22 @@ import {
 } from "slintcn/components/separator.slint";
 import { Collapsible } from "slintcn/components/collapsible.slint";
 import { Badge, BadgeVariant } from "slintcn/components/badge.slint";
+import { Icon } from "slintcn/components/icon.slint";
+import { LucidePaths } from "slintcn/components/lucide-paths.slint";
+import { AspectRatio } from "slintcn/components/aspect-ratio.slint";
+import "./fonts/GoogleSans.ttf";
 
 export struct LogEntry {
     timestamp: string,
     level: string,
     message: string,
+}
+
+export struct VideoEntry {
+    title: string,
+    link: string,
+    visibility: string,
+    thumbnail: image,
 }
 
 component SettingsEntry inherits Rectangle {
@@ -58,14 +73,17 @@ component SettingsEntry inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    preferred-width: 550px;
-    min-width: 450px;
+    title: "Clip Syncer";
+    preferred-width: 650px;
+    min-width: 550px;
     preferred-height: 400px;
     min-height: 280px;
-    title: "Clip Syncer";
     background: #1a1a1a;
 
+    default-font-family: "Google Sans";
+
     in property <[LogEntry]> logs: [];
+    in property <[VideoEntry]> videos: [];
     callback open_save_dialog();
     in-out property <string> selected_path: "Kein Pfad ausgewählt";
     in property <string> status_text: "Wartet auf Videos...";
@@ -75,12 +93,15 @@ export component AppWindow inherits Window {
     callback privacy_change(int);
     in-out property <int> encoder_selection_index;
     callback encoder_change(int);
+    callback upload_now();
+    callback link_clicked(string);
 
-    ScrollView {
+    Main := ScrollView {
         VerticalLayout {
             padding: 32px;
+            padding-bottom: 20px;
             spacing: 20px;
-            width: min(root.width - 64px, 750px);
+            width: min(root.width - 64px, 800px);
             alignment: center;
 
             VerticalLayout {
@@ -111,8 +132,123 @@ export component AppWindow inherits Window {
                     spacing: 10px;
 
                     Collapsible {
+                        title: "Hochgeladene Videos";
+                        clip: true;
+
+                        ListView {
+                            min-height: max(150px, Main.height - 400px);
+                            max-height: 350px;
+
+                            for entry in root.videos: VerticalLayout {
+                                padding-right: 20px;
+                                padding-bottom: 5px;
+                                Card {
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        padding-top: 6px;
+                                        padding-bottom: 6px;
+                                        padding-left: 8px;
+                                        padding-right: 8px;
+
+                                        VerticalLayout {
+                                            alignment: center;
+                                            HorizontalLayout {
+                                                alignment: center;
+                                                Rectangle {
+                                                    border-radius: 12px;
+                                                    height: 54px;
+                                                    width: 96px;
+                                                    clip: true;
+                                                    Image {
+                                                        source: entry.thumbnail;
+                                                        width: 100%;
+                                                        image-fit: contain;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Separator {
+                                            orientation: vertical;
+                                        }
+
+                                        VerticalLayout {
+                                            alignment: space-between;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+
+                                                Text {
+                                                    text: entry.title;
+                                                    font-size: 24px;
+                                                    overflow: elide;
+                                                    horizontal-stretch: 1;
+                                                    min-width: 0px;
+                                                    vertical-alignment: bottom;
+                                                }
+
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    horizontal-stretch: 0;
+
+                                                    AspectRatio {
+                                                        ratio: 1;
+                                                        Card {
+                                                            VerticalLayout {
+                                                                padding: 6px;
+                                                                Icon {
+                                                                    commands: entry.visibility == "public" ? LucidePaths.eye :
+                                                                        entry.visibility == "unlisted" ? LucidePaths.eye-off : LucidePaths.eye-closed;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            TouchArea {
+                                                mouse-cursor: pointer;
+                                                horizontal-stretch: 1;
+                                                height: txt.preferred-height;
+
+                                                clicked => { link_clicked(entry.link) }
+                                                txt := Text {
+                                                    text: entry.link;
+                                                    horizontal-stretch: 1;
+                                                    width: 100%;
+                                                    overflow: elide;
+                                                    wrap: no-wrap;
+                                                    font-family: "monospace";
+                                                    font-size: 13px;
+                                                    color: parent.has-hover ? #3b82f6 : #d1d5db;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Separator { }
+
+                    Collapsible {
                         title: "Einstellungen";
                         clip: true;
+
+                        SettingsEntry {
+                            title-text: "Jetzt hochladen:";
+                            description-text: "Warnung: Upload Limit kann überschritten werden";
+
+                            Button {
+                                clicked => {
+                                    upload_now();
+                                }
+                                text: "Hochladen";
+                                variant: ButtonVariant.destructive;
+                            }
+                        }
+
+                        Separator { }
 
                         SettingsEntry {
                             title-text: "Pfad:";
@@ -128,17 +264,19 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Sichtbarkeit:";
-                            description-text: "Sichtbarkeit des Clips auf YouTube";
+                            title-text: "FFmpeg:";
+                            description-text: "Hardware Beschleunigung von FFmpeg";
 
                             Select {
                                 items: [
-                                    { label: "Öffentlich", value: "public" },
-                                    { label: "Nicht Gelistet", value: "unlisted" },
-                                    { label: "Privat", value: "private" }
+                                    { label: "Automatisch", value: "auto" },
+                                    { label: "CPU", value: "cpu" },
+                                    { label: "Nvidia", value: "nvidia" },
+                                    { label: "AMD", value: "amd" },
+                                    { label: "Intel (GPU)", value: "intel" },
                                 ];
-                                selected-index <=> visibility_selection_index;
-                                changed(i) => { privacy_change(i) }
+                                selected-index <=> encoder_selection_index;
+                                changed(i) => { encoder_change(i) }
                             }
                         }
 
@@ -155,25 +293,6 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
-
-                        Separator { }
-
-                        SettingsEntry {
-                            title-text: "Ffmpeg:";
-                            description-text: "Hardware Beschleunigung von Ffmpeg";
-
-                            Select {
-                                items: [
-                                    { label: "Automatisch", value: "auto" },
-                                    { label: "CPU", value: "cpu" },
-                                    { label: "Nvidia", value: "nvidia" },
-                                    { label: "AMD", value: "amd" },
-                                    { label: "Intel (GPU)", value: "intel" },
-                                ];
-                                selected-index <=> encoder_selection_index;
-                                changed(i) => { encoder_change(i) }
-                            }
-                        }
                     }
 
                     Separator { }
@@ -183,47 +302,59 @@ export component AppWindow inherits Window {
                         clip: true;
 
                         ListView {
-                            height: 250px;
+                            min-height: max(150px, Main.height - 400px);
+                            max-height: 350px;
 
-                            for entry in root.logs: Rectangle {
-                                border-radius: 4px;
+                            for entry in root.logs: VerticalLayout {
+                                padding-right: 20px;
+                                padding-bottom: 5px;
 
-                                HorizontalLayout {
-                                    spacing: 12px;
-                                    padding-top: 6px;
-                                    padding-bottom: 6px;
-                                    padding-left: 8px;
-                                    padding-right: 8px;
+                                Card {
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        padding-top: 6px;
+                                        padding-bottom: 6px;
+                                        padding-left: 8px;
+                                        padding-right: 8px;
 
-                                    Text {
-                                        text: entry.timestamp;
-                                        color: #888888;
-                                        width: 65px;
-                                        vertical-alignment: top;
-                                        font-family: "monospace";
-                                        font-size: 12px;
-                                    }
-
-                                    VerticalLayout {
-                                        width: 80px;
-                                        alignment: start;
-
-                                        Badge {
-                                            text: entry.level;
-                                            variant: entry.level == "ERROR" ? BadgeVariant.destructive :
-                                                entry.level == "TRACE" ? BadgeVariant.outline :
-                                                entry.level == "INFO" ? BadgeVariant.default : BadgeVariant.secondary;
+                                        Text {
+                                            text: entry.timestamp;
+                                            color: #888888;
+                                            width: 65px;
+                                            vertical-alignment: center;
+                                            font-family: "monospace";
+                                            font-size: 12px;
                                         }
-                                    }
 
-                                    Text {
-                                        text: entry.message;
-                                        horizontal-stretch: 1;
-                                        wrap: word-wrap;
-                                        font-family: "monospace";
-                                        color: #d1d5db;
-                                        vertical-alignment: top;
-                                        font-size: 13px;
+                                        Separator {
+                                            orientation: vertical;
+                                        }
+
+                                        VerticalLayout {
+                                            width: 40px;
+                                            alignment: start;
+
+                                            Badge {
+                                                text: entry.level;
+                                                variant: entry.level == "ERROR" ? BadgeVariant.destructive :
+                                                    entry.level == "TRACE" ? BadgeVariant.outline :
+                                                    entry.level == "INFO" ? BadgeVariant.default : BadgeVariant.secondary;
+                                            }
+                                        }
+
+                                        Separator {
+                                            orientation: vertical;
+                                        }
+
+                                        Text {
+                                            text: entry.message;
+                                            horizontal-stretch: 1;
+                                            wrap: word-wrap;
+                                            font-family: "monospace";
+                                            color: #d1d5db;
+                                            vertical-alignment: center;
+                                            font-size: 13px;
+                                        }
                                     }
                                 }
                             }

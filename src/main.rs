@@ -6,6 +6,13 @@ use tracing_subscriber::layer::SubscriberExt;
 
 slint::include_modules!();
 
+#[derive(Debug, Clone)]
+pub struct VideoChannelEntry {
+    pub title: String,
+    pub link: String,
+    pub visibility: String,
+    pub thumbnail_url: String,
+}
 mod logger;
 mod storage;
 mod ui;
@@ -30,6 +37,8 @@ fn main() {
         ps_rx,
         ps_tx,
         log_rx,
+        video_tx,
+        video_rx,
     ) = setup_channels(&storage);
 
     info!("App startet");
@@ -45,10 +54,21 @@ fn main() {
         del_tx,
         ps_tx,
         log_rx,
+        &video_tx,
+        video_rx,
     );
 
     rt.spawn(async move {
-        run_background_uploader(&mut path_rx, path_tx, del_rx, ps_rx, storage, ui_weak).await;
+        run_background_uploader(
+            &mut path_rx,
+            path_tx,
+            del_rx,
+            ps_rx,
+            video_tx,
+            storage,
+            ui_weak,
+        )
+        .await;
     });
 
     ui.show().expect("Fehler das Fenster anzuzeigen");
@@ -67,6 +87,8 @@ fn setup_channels(
     Receiver<PrivacyStatus>,
     Arc<Sender<PrivacyStatus>>,
     tokio::sync::mpsc::Receiver<LogEntry>,
+    Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
+    tokio::sync::mpsc::Receiver<VideoChannelEntry>,
 ) {
     let (current_path, current_delete_original, current_privacy_status) = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
@@ -87,11 +109,23 @@ fn setup_channels(
     let ps_tx = Arc::new(ps_tx);
 
     let (log_tx, log_rx) = tokio::sync::mpsc::channel::<LogEntry>(128);
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+        .add_directive("h2=off".parse().unwrap())
+        .add_directive("hyper=off".parse().unwrap())
+        .add_directive("hyper_util=off".parse().unwrap())
+        .add_directive("google_youtube3=info".parse().unwrap());
+
     let subscriber = tracing_subscriber::registry()
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .with(SlintLayer { sender: log_tx });
 
     tracing::subscriber::set_global_default(subscriber).unwrap();
+
+    let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoChannelEntry>(100);
+    let video_tx = Arc::new(video_tx);
 
     (
         current_delete_original,
@@ -103,5 +137,7 @@ fn setup_channels(
         ps_rx,
         ps_tx,
         log_rx,
+        video_tx,
+        video_rx,
     )
 }
