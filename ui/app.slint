@@ -73,6 +73,8 @@ export component AppWindow inherits Window {
     in-out property <bool> delete_original: false;
     in-out property <int> visibility_selection_index;
     callback privacy_change(int);
+    in-out property <int> encoder_selection_index;
+    callback encoder_change(int);
 
     ScrollView {
         VerticalLayout {
@@ -151,6 +153,25 @@ export component AppWindow inherits Window {
                                 toggled => {
                                     root.delete_original_changed(root.delete_original);
                                 }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Ffmpeg:";
+                            description-text: "Hardware Beschleunigung von Ffmpeg";
+
+                            Select {
+                                items: [
+                                    { label: "Automatisch", value: "auto" },
+                                    { label: "CPU", value: "cpu" },
+                                    { label: "Nvidia", value: "nvidia" },
+                                    { label: "AMD", value: "amd" },
+                                    { label: "Intel (GPU)", value: "intel" },
+                                ];
+                                selected-index <=> encoder_selection_index;
+                                changed(i) => { encoder_change(i) }
                             }
                         }
                     }

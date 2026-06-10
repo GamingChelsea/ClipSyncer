@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch::Sender;
 use slint::{ComponentHandle, Model};
 use crate::{AppWindow, LogEntry};
-use crate::storage::{AppStorage, PrivacyStatus, save_storage};
+use crate::storage::{AppStorage, PrivacyStatus, VideoEncoder, save_storage};
 
 pub fn setup_ui(
     storage: &Arc<Mutex<AppStorage>>,
@@ -98,6 +98,27 @@ pub fn setup_ui(
         (current_privacy_status as usize)
             .try_into()
             .expect("Fehler beim Setzen vom PrivacyStatus"),
+    );
+
+    let current_video_encoder = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.video_encoder
+    };
+
+    let storage_clone_video_encoder = Arc::clone(storage);
+    ui.on_encoder_change(move |index| {
+        let storage_for_thread = Arc::clone(&storage_clone_video_encoder);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.video_encoder = VideoEncoder::new(index);
+            }
+            save_storage(&storage_for_thread);
+        });
+    });
+    ui.set_encoder_selection_index(
+        (current_video_encoder as usize)
+            .try_into()
+            .expect("Fehler beim Setzen vom VideoEncoder"),
     );
 
     let ui_close_handle = ui_weak.clone();

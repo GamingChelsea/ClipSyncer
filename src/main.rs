@@ -6,16 +6,16 @@ use tracing_subscriber::layer::SubscriberExt;
 
 slint::include_modules!();
 
-mod storage;
 mod logger;
+mod storage;
 mod ui;
-mod video;
 mod uploader;
+mod video;
 
-use storage::{load_storage, AppStorage, PrivacyStatus};
+use logger::SlintLayer;
+use storage::{AppStorage, PrivacyStatus, load_storage};
 use ui::setup_ui;
 use uploader::run_background_uploader;
-use logger::SlintLayer;
 
 fn main() {
     let storage = load_storage();

@@ -1,6 +1,7 @@
+use chrono::TimeZone;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use serde::{Deserialize, Serialize};
 use tracing::info;
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone, Copy)]
@@ -11,6 +12,29 @@ pub enum PrivacyStatus {
     Private,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
+pub enum VideoEncoder {
+    #[default]
+    Auto,
+    Cpu,
+    Nvidia,
+    Amd,
+    Intel,
+}
+
+impl VideoEncoder {
+    pub fn new(index: i32) -> Self {
+        match index {
+            0 => VideoEncoder::Auto,
+            1 => VideoEncoder::Cpu,
+            2 => VideoEncoder::Nvidia,
+            3 => VideoEncoder::Amd,
+            4 => VideoEncoder::Intel,
+            _ => VideoEncoder::Auto,
+        }
+    }
+}
+
 impl PrivacyStatus {
     pub fn new(index: i32) -> Self {
         match index {
@@ -19,7 +43,7 @@ impl PrivacyStatus {
             _ => PrivacyStatus::Private,
         }
     }
-    
+
     pub fn to_useable_string(&self) -> &str {
         match self {
             Self::Public => "public",
@@ -37,6 +61,7 @@ pub struct AppStorage {
     pub privacy_status: PrivacyStatus,
     pub last_upload_date: chrono::DateTime<chrono::Local>,
     pub uploads_today: usize,
+    pub video_encoder: VideoEncoder,
 }
 
 pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
@@ -53,8 +78,9 @@ pub fn load_storage() -> Arc<Mutex<AppStorage>> {
         uploaded_files: vec![],
         delete_original: false,
         privacy_status: PrivacyStatus::Unlisted,
-        last_upload_date: chrono::Local::now(),
+        last_upload_date: chrono::Local::now() - chrono::Duration::hours(4),
         uploads_today: 0,
+        video_encoder: VideoEncoder::Auto,
     };
     let ron_content = std::fs::read_to_string("config.ron");
     match ron_content {

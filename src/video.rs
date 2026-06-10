@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{error, info};
 
+use crate::storage::VideoEncoder;
+
 pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {
     use tokio::fs::read_dir;
     let mut pending = Vec::new();
@@ -34,7 +36,11 @@ pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<Pa
     pending
 }
 
-pub async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bool {
+pub async fn merge_multiple_videos(
+    chunks: &[PathBuf],
+    output_path: &Path,
+    video_encoder: VideoEncoder,
+) -> bool {
     use tokio::io::AsyncWriteExt;
 
     let (target_w, target_h) = match probe_resolution(&chunks[0]).await {
@@ -60,7 +66,7 @@ pub async fn merge_multiple_videos(chunks: &[PathBuf], output_path: &Path) -> bo
                 .suffix(".mp4")
                 .tempfile()?;
 
-            if normalize_clip(&clip, tmp_file.path(), target_w, target_h).await {
+            if normalize_clip(&clip, tmp_file.path(), target_w, target_h, video_encoder).await {
                 Ok((index, tmp_file))
             } else {
                 Err(std::io::Error::new(
@@ -208,7 +214,13 @@ pub async fn probe_audio_track_count(path: &Path) -> usize {
     }
 }
 
-pub async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32) -> bool {
+pub async fn normalize_clip(
+    input: &Path,
+    output: &Path,
+    width: u32,
+    height: u32,
+    video_encoder: VideoEncoder,
+) -> bool {
     let audio_tracks = probe_audio_track_count(input).await;
     info!(
         "Normalisiere {:?}  →  {}×{}  ({} Audiospur/en)",
@@ -225,6 +237,18 @@ pub async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32
         h = height
     );
 
+    let selected_encoder = match video_encoder {
+        VideoEncoder::Auto => detect_best_encoder().await,
+        other => other,
+    };
+
+    let encoder_str = match selected_encoder {
+        VideoEncoder::Nvidia => "h264_nvenc",
+        VideoEncoder::Amd => "h264_amf",
+        VideoEncoder::Intel => "h264_qsv",
+        _ => "libx264",
+    };
+
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.arg("-y").arg("-i").arg(input);
 
@@ -235,9 +259,7 @@ pub async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32
                 .args(["-map", "[vout]", "-map", "1:a:0"])
                 .args([
                     "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
+                    encoder_str,
                     "-c:a",
                     "aac",
                     "-b:a",
@@ -252,9 +274,7 @@ pub async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32
                 .args(["-map", "[vout]", "-map", "0:a:0"])
                 .args([
                     "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
+                    encoder_str,
                     "-c:a",
                     "aac",
                     "-b:a",
@@ -276,9 +296,7 @@ pub async fn normalize_clip(input: &Path, output: &Path, width: u32, height: u32
                 .args(["-map", "[vout]", "-map", "[aout]"])
                 .args([
                     "-c:v",
-                    "libx264",
-                    "-preset",
-                    "fast",
+                    encoder_str,
                     "-c:a",
                     "aac",
                     "-b:a",
@@ -337,4 +355,23 @@ pub fn path_to_string(file_path: &PathBuf) -> String {
         .file_name()
         .map(|os_str| os_str.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+pub async fn detect_best_encoder() -> VideoEncoder {
+    let output = tokio::process::Command::new("ffmpeg")
+        .arg("-encoders")
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        let text = String::from_utf8_lossy(&out.stdout);
+        if text.contains("h264_nvenc") {
+            return VideoEncoder::Nvidia;
+        } else if text.contains("h264_amf") {
+            return VideoEncoder::Amd;
+        } else if text.contains("h264_qsv") {
+            return VideoEncoder::Intel;
+        }
+    };
+    VideoEncoder::Cpu
 }

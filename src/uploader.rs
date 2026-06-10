@@ -1,17 +1,17 @@
+use bytes::Bytes;
+use google_youtube3::hyper_rustls::HttpsConnector;
+use google_youtube3::hyper_util;
+use google_youtube3::hyper_util::client::legacy::connect::HttpConnector;
+use http_body_util::combinators::BoxBody;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch::{Receiver, Sender};
 use tracing::{error, info};
 use yup_oauth2::InstalledFlowAuthenticator;
-use google_youtube3::hyper_rustls::HttpsConnector;
-use google_youtube3::hyper_util;
-use google_youtube3::hyper_util::client::legacy::connect::HttpConnector;
-use http_body_util::combinators::BoxBody;
-use bytes::Bytes;
 
 use crate::AppWindow;
-use crate::storage::{AppStorage, PrivacyStatus, save_storage};
-use crate::video::{get_pending_clips, merge_multiple_videos, process_video_file, path_to_string};
+use crate::storage::{AppStorage, PrivacyStatus, VideoEncoder, save_storage};
+use crate::video::{get_pending_clips, merge_multiple_videos, path_to_string, process_video_file};
 
 pub type GoogleClient = google_youtube3::hyper_util::client::legacy::Client<
     HttpsConnector<HttpConnector>,
@@ -118,10 +118,13 @@ pub async fn run_background_uploader(
             }
 
             info!("Prüfe Ordner: {:?}", clip_folder);
-            let uploaded_files_clone = {
-                let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
-                guard.uploaded_files.clone()
-            };
+
+            let mut uploaded_files_clone = Vec::<String>::new();
+            let mut video_encoder = VideoEncoder::Auto;
+            if let Ok(storage_ok) = storage.lock() {
+                uploaded_files_clone = storage_ok.uploaded_files.clone();
+                video_encoder = storage_ok.video_encoder;
+            }
 
             let pending_clips = get_pending_clips(&clip_folder, &uploaded_files_clone).await;
 
@@ -154,7 +157,7 @@ pub async fn run_background_uploader(
                     };
                     let combined_output = combined_output_temp.path();
 
-                    if !merge_multiple_videos(clip_paket, combined_output).await {
+                    if !merge_multiple_videos(clip_paket, combined_output, video_encoder).await {
                         error!("Paket Verarbeitung wegen FFmpeg-Merge-Fehler abgebrochen");
                         continue;
                     }
