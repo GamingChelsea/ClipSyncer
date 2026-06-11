@@ -1,0 +1,123 @@
+{
+  "theme": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/theme/palette.slint": "56f076b9e9d7c4968d0cc61ff114d9d4fb8f6ac2c9c569b01cb2252c65674e70",
+      "ui/slintcn/theme/tokens.slint": "822463bfb9289211fe1a72f2ae3c86d8ee661171d2c808efb9a5f1fa932a0628"
+    }
+  },
+  "focus-ring": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/focus-ring.slint": "e1d33962577d7f1b042af3e113d26a06cd917f046ae4a5a8eb366f0c1a30a12c"
+    }
+  },
+  "button": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/button.slint": "b9c36d0e484bb931e38faade00afe58ae26b293ce4b82cf613cd45c75d03b8e2"
+    }
+  },
+  "card": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/card.slint": "9c27b2a48f3730a03fc3caf942e01f1c04fa00d368074f82f8885f63f5c9622b"
+    }
+  },
+  "input": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/input.slint": "4c92746253d0cc717b3113b4646d8d75fc6932ac3ab7b24a3516d7e0f6ecf84c"
+    }
+  },
+  "popup-helpers": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/popup-helpers.slint": "e37ec5dc48ff8efa8ee664a3a651d7c4ce5c80178df480b5192fbdc9276953ea"
+    }
+  },
+  "separator": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/separator.slint": "9ef37144aadb3a5306a3a847f27024589ec99d17a764e3c93d1d0000b29e28b2"
+    }
+  },
+  "icon": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/icon.slint": "df4687d04218e8bd6e58192e7666c0d0dbba3d080afd906d176c15c172476cdc"
+    }
+  },
+  "lucide-paths": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/lucide-paths.slint": "efc8bc6a7d578fc1d45072c7f5f63477718c36a907cd2a7709aef5d78dabad3d"
+    }
+  },
+  "dialog-panel": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/dialog-panel.slint": "faeaeedbf89938ab56da0e2b1fb5467dd7640fd64409529b85d0d96175c91376"
+    }
+  },
+  "dialog": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/dialog.slint": "18f602fd30c507480ea9bdea554d17ebfe11dd12e411c6a8a97c31fb69f82384"
+    }
+  },
+  "select": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/select.slint": "28d30ecaebfad8b90925062bb4c6aa7d913b303a333466b252e78c76fdb78b2c"
+    }
+  },
+  "text": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/text.slint": "641be086e1dc9b10434ff233706e2fb47c9aea6338f79f9db67aa792bc6bffe8"
+    }
+  },
+  "switch": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/switch.slint": "2c83d1d49b95230bb8fe9bdbb964a2d3ffb382535be3bd0337db1d2e87f3e32b"
+    }
+  },
+  "collapsible": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/collapsible.slint": "da9df1ed3094185e5d0ae78948d12ad125fec40229a2bc331de6ba102fc37695"
+    }
+  },
+  "badge": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/badge.slint": "0e419a344dd0be07aef151e99ae642d8c97beca174a22c220ab21367bca4e564"
+    }
+  },
+  "aspect-ratio": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/aspect-ratio.slint": "cda2fd5b2ddaf1216d67edd5ef298e377acf1af14ed8f87e53e7bf43f66a9aa7"
+    }
+  },
+  "tooltip": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/tooltip.slint": "d637fd8e03a3197975b1bf7d4ca569f0c8cb08a7ebec43bb0c11a89b56540607"
+    }
+  },
+  "alert-dialog-panel": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/alert-dialog-panel.slint": "e9bb72b5ea5e384aa898fad8fc0a6cbc6573d843ee03edac8c189767d2c9e24c"
+    }
+  },
+  "alert-dialog": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/alert-dialog.slint": "04996d381e4910edd4b08e1d406a0cdb3d65b52ab10ffab556b8f5f22a001d8f"
+    }
+  }
+}

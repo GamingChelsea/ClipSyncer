@@ -8,6 +8,44 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch::{Receiver, Sender};
 use tracing::{error, info};
 use yup_oauth2::InstalledFlowAuthenticator;
+use yup_oauth2::authenticator_delegate::InstalledFlowDelegate;
+
+struct SlintOAuthDelegate {
+    ui_weak: slint::Weak<AppWindow>,
+}
+
+impl InstalledFlowDelegate for SlintOAuthDelegate {
+    fn present_user_url<'a>(
+        &'a self,
+        url: &'a str,
+        need_code: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>> {
+        let ui_weak = self.ui_weak.clone();
+        let url_str = url.to_string();
+        Box::pin(async move {
+            info!("Bitte öffne den Webbrowser zur Google-Anmeldung: {}", url_str);
+            
+            // Versuche den Browser automatisch zu öffnen
+            if let Err(e) = webbrowser::open(&url_str) {
+                error!("Fehler beim automatischen Öffnen des Webbrowsers: {}", e);
+            }
+            
+            // Setze die URL in der Slint UI
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_login_url(url_str.into());
+                }
+            });
+
+            if need_code {
+                Err("Manuelle Code-Eingabe wird nicht unterstützt.".to_string())
+            } else {
+                Ok(String::new())
+            }
+        })
+    }
+}
+
 
 use crate::storage::{AppStorage, PrivacyStatus, VideoEncoder, save_storage};
 use crate::video::{get_pending_clips, merge_multiple_videos, path_to_string, process_video_file};
@@ -30,23 +68,77 @@ pub async fn run_background_uploader(
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Fehler bei der Initialisierung von rustls");
-    let secret = yup_oauth2::read_application_secret("client_secret.json")
+
+    let mut secret_opt;
+    let mut initial_token_json;
+
+    loop {
+        {
+            let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+            secret_opt = guard.client_secret.clone();
+            initial_token_json = guard.token_cache.clone();
+        }
+
+        if secret_opt.is_some() {
+            break;
+        }
+
+        let ui_weak_clone = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak_clone.upgrade() {
+                ui.set_needs_client_secret(true);
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
+
+    let secret = secret_opt.unwrap();
+
+    let temp_token_file =
+        tempfile::NamedTempFile::new().expect("Fehler beim Erstellen der temporären Token-Datei");
+    let temp_path = temp_token_file.path().to_path_buf();
+
+    let token_content = initial_token_json.unwrap_or_else(|| "[]".to_string());
+    tokio::fs::write(&temp_path, token_content)
         .await
-        .expect("client_secret konnte nicht gelesen werden");
+        .expect("Fehler beim Schreiben des Token-Caches");
 
     let auth = InstalledFlowAuthenticator::builder(
         secret,
         yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
     )
-    .persist_tokens_to_disk("token_cache.json")
+    .flow_delegate(Box::new(SlintOAuthDelegate {
+        ui_weak: ui_weak.clone(),
+    }))
+    .persist_tokens_to_disk(&temp_path)
     .build()
     .await
     .expect("Fehler bei der Authentisierung");
+
+    let _ = &ui_weak.upgrade().map(|ui| ui.set_logged_in(false));
 
     let scopes = &["https://www.googleapis.com/auth/youtube.upload"];
     auth.token(scopes)
         .await
         .expect("Fehler bei der Anmeldung im Browser");
+
+    let ui_weak_login = ui_weak.clone();
+
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_login.upgrade() {
+            ui.set_logged_in(true);
+            ui.set_login_url("".into());
+        }
+    });
+
+    if let Ok(updated_tokens) = tokio::fs::read_to_string(&temp_path).await {
+        {
+            let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+            guard.token_cache = Some(updated_tokens);
+        }
+        save_storage(&storage);
+    }
 
     let connector = google_youtube3::hyper_rustls::HttpsConnectorBuilder::new()
         .with_native_roots()

@@ -53,6 +53,7 @@ impl PrivacyStatus {
 }
 
 #[derive(Serialize, Deserialize, Default, Debug)]
+#[serde(default)]
 pub struct AppStorage {
     pub clip_location: Option<PathBuf>,
     pub uploaded_files: Vec<String>,
@@ -63,6 +64,8 @@ pub struct AppStorage {
     pub last_upload_date: chrono::DateTime<chrono::Local>,
     pub uploads_today: usize,
     pub video_encoder: VideoEncoder,
+    pub client_secret: Option<yup_oauth2::ApplicationSecret>,
+    pub token_cache: Option<String>,
 }
 
 pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
@@ -84,6 +87,8 @@ pub fn load_storage() -> Arc<Mutex<AppStorage>> {
         last_upload_date: chrono::Local::now() - chrono::Duration::hours(4),
         uploads_today: 0,
         video_encoder: VideoEncoder::Auto,
+        client_secret: None,
+        token_cache: None,
     };
     let ron_content = std::fs::read_to_string("config.ron");
     match ron_content {

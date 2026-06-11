@@ -1,0 +1,81 @@
+// slintcn AlertDialog — destructive-confirmation modal (Scrim + AlertDialogPanel).
+//
+// Like Dialog, but:
+//   - no body slot (the description IS the message)
+//   - no backdrop dismissal (user must explicitly Cancel or Confirm)
+//   - footer is Cancel + Action buttons (Action defaults to destructive)
+//   - Escape fires cancelled()
+//
+// Mount the same way as Dialog: LAST child of Window, sized via
+// `width: parent.width; height: parent.height`. For your own overlay root,
+// install `alert-dialog-panel` and mount `AlertDialogPanel` directly.
+
+import { Tokens } from "../theme/tokens.slint";
+import { Scrim } from "popup-helpers.slint";
+import { ButtonVariant } from "button.slint";
+import { AlertDialogPanel } from "alert-dialog-panel.slint";
+
+export component AlertDialog inherits Rectangle {
+    // Two-way; consumer sets true to show, slintcn sets false on close.
+    in-out property <bool> open: false;
+    // Heading at the top of the modal.
+    in property <string> title;
+    // Body text describing the consequences of the action.
+    in property <string> description;
+    // Label for the destructive button (right side).
+    in property <string> action-label: "Continue";
+    // Label for the safe button (left side).
+    in property <string> cancel-label: "Cancel";
+    // Style for the action button — defaults to `destructive`.
+    in property <ButtonVariant> action-variant: ButtonVariant.destructive;
+    // Fired when the action button is pressed; the modal closes itself.
+    callback confirmed();
+    // Fired on Cancel; the modal closes itself.
+    callback cancelled();
+
+    background: transparent;
+
+    Scrim {
+        x: 0; y: 0;
+        width:  root.width;
+        height: root.height;
+        shown: root.open;
+        // Backdrop click is intentionally a no-op — the user must choose.
+    }
+
+    panel := AlertDialogPanel {
+        title: root.title;
+        description: root.description;
+        action-label: root.action-label;
+        cancel-label: root.cancel-label;
+        action-variant: root.action-variant;
+        trap-focus: root.open;
+
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+
+        opacity: root.open ? 1.0 : 0.0;
+        visible: root.open || self.opacity > 0.0;
+        animate opacity {
+            duration: Tokens.motion-base;
+            easing: Tokens.motion-easing-standard;
+        }
+
+        cancelled => {
+            root.open = false;
+            root.cancelled();
+        }
+        confirmed => {
+            root.open = false;
+            root.confirmed();
+        }
+    }
+
+    changed open => {
+        if (self.open) {
+            panel.take-focus();
+        }
+    }
+
+    forward-focus: panel;
+}

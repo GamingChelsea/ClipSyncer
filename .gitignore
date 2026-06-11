@@ -1,5 +1,4 @@
 /target
 /videos
-*.json
 config.ron
 config copy.ron

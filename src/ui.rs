@@ -21,6 +21,44 @@ pub fn setup_ui(
     let ui = AppWindow::new().expect("Fehler beim erstellen vom UI");
     let ui_weak = ui.as_weak();
 
+    let has_token = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.token_cache.is_some()
+    };
+    ui.set_logged_in(has_token);
+
+    let storage_clone_secret = Arc::clone(storage);
+    let ui_weak_secret = ui_weak.clone();
+    ui.on_select_client_secret(move || {
+        let storage_for_thread = Arc::clone(&storage_clone_secret);
+        let ui_weak_for_thread = ui_weak_secret.clone();
+        std::thread::spawn(move || {
+            let result = rfd::FileDialog::new()
+                .set_title("Wähle deine client_secret.json aus")
+                .add_filter("JSON", &["json"])
+                .pick_file();
+
+            if let Some(file_path) = result {
+                let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler in Thread");
+                let secret_result = rt.block_on(async {
+                    yup_oauth2::read_application_secret(&file_path).await
+                });
+
+                if let Ok(secret) = secret_result {
+                    if let Ok(mut guard) = storage_for_thread.lock() {
+                        guard.client_secret = Some(secret);
+                    }
+                    save_storage(&storage_for_thread);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak_for_thread.upgrade() {
+                            ui.set_needs_client_secret(false);
+                        }
+                    });
+                }
+            }
+        });
+    });
+
     let storage_clone = Arc::clone(storage);
     let ui_weak_dialog = ui_weak.clone();
     let path_tx_clone = path_tx.clone();

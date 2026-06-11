@@ -21,6 +21,9 @@ import { Badge, BadgeVariant } from "slintcn/components/badge.slint";
 import { Icon } from "slintcn/components/icon.slint";
 import { LucidePaths } from "slintcn/components/lucide-paths.slint";
 import { AspectRatio } from "slintcn/components/aspect-ratio.slint";
+import { TooltipContainer } from "slintcn/components/tooltip.slint";
+import { AlertDialog } from "slintcn/components/alert-dialog.slint";
+
 import "./fonts/GoogleSans.ttf";
 
 export struct LogEntry {
@@ -95,6 +98,10 @@ export component AppWindow inherits Window {
     callback encoder_change(int);
     callback upload_now();
     callback link_clicked(string);
+    in property <bool> logged_in: false;
+    in property <bool> needs_client_secret: false;
+    callback select_client_secret();
+    in-out property <string> login_url: "";
 
     Main := ScrollView {
         VerticalLayout {
@@ -177,13 +184,18 @@ export component AppWindow inherits Window {
                                             HorizontalLayout {
                                                 spacing: 8px;
 
-                                                Text {
-                                                    text: entry.title;
-                                                    font-size: 24px;
-                                                    overflow: elide;
+                                                TooltipContainer {
                                                     horizontal-stretch: 1;
-                                                    min-width: 0px;
-                                                    vertical-alignment: bottom;
+                                                    text: entry.title;
+                                                    side: top;
+
+                                                    Text {
+                                                        text: entry.title;
+                                                        font-size: 24px;
+                                                        overflow: elide;
+                                                        vertical-alignment: bottom;
+                                                        horizontal-stretch: 1;
+                                                    }
                                                 }
 
                                                 VerticalLayout {
@@ -283,6 +295,23 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
+                            title-text: "Sichtbarkeit:";
+                            description-text: "Sichtbarkeit des Clips auf YouTube";
+
+                            Select {
+                                items: [
+                                    { label: "Öffentlich", value: "public" },
+                                    { label: "Nicht Gelistet", value: "unlisted" },
+                                    { label: "Privat", value: "private" }
+                                ];
+                                selected-index <=> visibility_selection_index;
+                                changed(i) => { privacy_change(i) }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
                             title-text: "Löschung:";
                             description-text: "Lokale Originale löschen nach dem Upload?";
 
@@ -359,6 +388,93 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    dlg_secret := AlertDialog {
+        width: parent.width;
+        height: parent.height;
+        open: needs_client_secret;
+        title: "Google API Setup";
+        description: "Um auf YouTube hochzuladen, wird eine 'client_secret.json' benötigt:\n\n1. Gehe zu console.cloud.google.com und erstelle ein Projekt.\n2. Aktiviere dort die 'YouTube Data API v3'.\n3. Erstelle unter Anmeldedaten eine 'OAuth-Client-ID' (Typ: Desktop-App).\n4. Lade die JSON-Datei herunter und wähle sie hier aus.";
+        cancel-label: "Datei auswählen";
+        cancelled => {
+            select_client_secret();
+        }
+    }
+
+    if (!logged_in && !needs_client_secret): Rectangle {
+        width: parent.width;
+        height: parent.height;
+        x: 0;
+        y: 0;
+
+        Card {
+            height: 60%;
+            width: 460px;
+            variant: CardVariant.raised;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+
+                Typography {
+                    text: "Google Anmeldung";
+                    font-size: 20px;
+                    font-weight: 700;
+                    color: #ffffff;
+                }
+
+                Typography {
+                    text: "Um Videos auf YouTube hochzuladen, ist eine Anmeldung bei Google erforderlich. Es öffnet sich gleich ein Browser-Fenster.";
+                    variant: TextVariant.body;
+                    tone: TextTone.muted;
+                    wrap: word-wrap;
+                }
+
+                if (login_url != ""): VerticalLayout {
+                    spacing: 12px;
+
+                    Typography {
+                        text: "Falls sich das Fenster nicht automatisch geöffnet hat, kannst du den Link kopieren oder manuell öffnen:";
+                        variant: TextVariant.body-sm;
+                        tone: TextTone.muted;
+                        wrap: word-wrap;
+                    }
+
+                    LineEdit {
+                        text: login_url;
+                        read-only: true;
+                        font-family: "monospace";
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: end;
+
+                        Button {
+                            text: "Im Browser öffnen";
+                            variant: ButtonVariant.default;
+                            clicked => {
+                                link_clicked(login_url);
+                            }
+                        }
+                    }
+                }
+
+                if (login_url == ""): HorizontalLayout {
+                    alignment: center;
+                    spacing: 8px;
+
+                    Typography {
+                        text: "Generiere Anmelde-Link...";
+                        variant: TextVariant.body;
+                        tone: TextTone.muted;
                     }
                 }
             }

@@ -1,0 +1,89 @@
+import { Tokens } from "../theme/tokens.slint";
+
+export enum TooltipSide { top, right, bottom, left }
+
+export component TooltipContainer inherits Rectangle {
+    // API
+    in property <string> text;
+    in property <TooltipSide> side: TooltipSide.top;
+
+    background: transparent;
+
+    min-width: main-touch-area.min-width;
+    min-height: main-touch-area.min-height;
+    preferred-width: main-touch-area.preferred-width;
+    preferred-height: main-touch-area.preferred-height;
+
+    // Interner Sichtbarkeits-State
+    property <bool> is-visible: false;
+
+    changed is-visible => {
+        if (self.is-visible && root.text != "") {
+            popup.show();
+        } else {
+            popup.close();
+        }
+    }
+
+    main-touch-area := TouchArea {
+        // Keine manuellen Event-Handler mehr hier drin! 
+        // Das erledigt der reaktive Timer unten vollautomatisch.
+        HorizontalLayout {
+            @children
+        }
+    }
+
+    // DIE REAKTIVE STATE-MACHINE (Verhindert das Neustarten/Flackern)
+    // Der Timer läuft NUR, wenn Hover-Status und Sichtbarkeit NICHT übereinstimmen.
+    state-timer := Timer {
+        // 300ms Bedenkzeit zum Öffnen, 80ms "Schonfrist" beim Verlassen (schluckt das Flackern)
+        interval: main-touch-area.has-hover ? 300ms : 80ms;
+
+        // Sobald Zustand gleich ist (z.B. Sichtbar & Hover vorhanden), stoppt der Timer -> 0% CPU Last!
+        running: main-touch-area.has-hover != root.is-visible;
+
+        triggered => {
+            root.is-visible = main-touch-area.has-hover;
+        }
+    }
+
+    popup := PopupWindow {
+        close-policy: no-auto-close;
+
+        x: root.side == TooltipSide.left
+            ? -self.width - 8px
+            : root.side == TooltipSide.right
+            ? root.width + 8px
+            : (root.width - self.width) / 2;
+
+        y: root.side == TooltipSide.top
+            ? -self.height - 8px
+            : root.side == TooltipSide.bottom
+            ? root.height + 8px
+            : (root.height - self.height) / 2;
+
+        Rectangle {
+            background: Tokens.color-primary;
+            border-radius: Tokens.radius-md;
+            drop-shadow-blur: Tokens.shadow-e2-blur;
+            drop-shadow-offset-y: Tokens.shadow-e2-offset-y;
+            drop-shadow-color: Tokens.shadow-e2-color;
+
+            // LÖSUNG FÜR DIE COMPILER-WARNUNG: 
+            // Das Layout-Element fängt jetzt sauber die Paddings ab.
+            VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 6px;
+                padding-bottom: 6px;
+
+                Text {
+                    color: Tokens.color-primary-foreground;
+                    font-size: Tokens.typography-label-size;
+                    text: root.text;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
