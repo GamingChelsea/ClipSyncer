@@ -40,9 +40,8 @@ pub fn setup_ui(
 
             if let Some(file_path) = result {
                 let rt = tokio::runtime::Runtime::new().expect("Tokio Runtime Fehler in Thread");
-                let secret_result = rt.block_on(async {
-                    yup_oauth2::read_application_secret(&file_path).await
-                });
+                let secret_result =
+                    rt.block_on(async { yup_oauth2::read_application_secret(&file_path).await });
 
                 if let Ok(secret) = secret_result {
                     if let Ok(mut guard) = storage_for_thread.lock() {
@@ -129,50 +128,114 @@ pub fn setup_ui(
         while let Some(entry) = video_rx.recv().await {
             let ui_handle = ui_weak_videos.clone();
 
-            let img_bytes: Option<Vec<u8>> = if !entry.thumbnail_url.is_empty() {
-                match reqwest::get(&entry.thumbnail_url).await {
-                    Ok(r) => r.bytes().await.ok().map(|b| b.to_vec()),
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
-
             let title = entry.title.clone();
             let link = entry.link.clone();
             let visibility = entry.visibility.clone();
+            let thumbnail_url = entry.thumbnail_url.clone();
 
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_handle.upgrade() {
-                    let thumbnail = img_bytes
-                        .and_then(|bytes| image::load_from_memory(&bytes).ok())
-                        .map(|img| {
-                            let rgba = img.to_rgba8();
-                            let (w, h) = rgba.dimensions();
-                            slint::Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
-                                rgba.as_raw(),
-                                w,
-                                h,
-                            ))
-                        })
-                        .unwrap_or_default();
+            let _ = slint::invoke_from_event_loop({
+                let ui_handle = ui_handle.clone();
+                let title = title.clone();
+                let link = link.clone();
+                let visibility = visibility.clone();
+                let thumbnail_bytes = entry.thumbnail_bytes.clone();
+                move || {
+                    if let Some(ui) = ui_handle.upgrade() {
+                        let mut current_videos: Vec<VideoEntry> = ui.get_videos().iter().collect();
 
-                    let video_entry = VideoEntry {
-                        title: title.into(),
-                        link: link.into(),
-                        visibility: visibility.into(),
-                        thumbnail,
-                    };
+                        let thumbnail_image = if let Some(bytes) = &thumbnail_bytes {
+                            if let Ok(img) = image::load_from_memory(bytes) {
+                                let rgba = img.to_rgba8();
+                                let (w, h) = rgba.dimensions();
+                                slint::Image::from_rgba8(
+                                    SharedPixelBuffer::clone_from_slice(rgba.as_raw(), w, h),
+                                )
+                            } else {
+                                slint::Image::default()
+                            }
+                        } else {
+                            slint::Image::default()
+                        };
 
-                    let mut current_videos: Vec<VideoEntry> = ui.get_videos().iter().collect();
-                    if current_videos.len() >= 50 {
-                        current_videos.remove(0);
+                        if let Some(item) = current_videos.iter_mut().find(|v| v.link == link) {
+                            item.title = title.clone().into();
+                            item.visibility = visibility.clone().into();
+                            if thumbnail_bytes.is_some() {
+                                item.thumbnail = thumbnail_image;
+                            }
+                        } else {
+                            let video_entry = VideoEntry {
+                                title: title.clone().into(),
+                                link: link.clone().into(),
+                                visibility: visibility.clone().into(),
+                                thumbnail: thumbnail_image,
+                            };
+
+                            if current_videos.len() >= 50 {
+                                current_videos.remove(0);
+                            }
+                            current_videos.push(video_entry);
+                        }
+
+                        let model = std::rc::Rc::new(slint::VecModel::from(current_videos));
+                        ui.set_videos(model.into());
                     }
-                    current_videos.push(video_entry);
-                    let model = std::rc::Rc::new(slint::VecModel::from(current_videos));
-                    ui.set_videos(model.into());
                 }
             });
+
+            if entry.thumbnail_bytes.is_none() && !thumbnail_url.is_empty() {
+                tokio::spawn(async move {
+                    let mut img_bytes: Option<Vec<u8>> = None;
+                    let max_attempts = 5;
+                    let delay = std::time::Duration::from_secs(10);
+
+                    for attempt in 1..=max_attempts {
+                        match reqwest::get(&thumbnail_url).await {
+                            Ok(response) if response.status().is_success() => {
+                                if let Ok(bytes) = response.bytes().await {
+                                    img_bytes = Some(bytes.to_vec());
+                                    break;
+                                }
+                            }
+                            _ => {
+                                tracing::info!(
+                                    "Thumbnail für {} nicht verfügbar (Versuch {}/{}). Versuche erneut in ein paar Sekunden...",
+                                    title,
+                                    attempt,
+                                    max_attempts
+                                );
+                            }
+                        }
+                        if attempt < max_attempts {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+
+                    if let Some(bytes) = img_bytes {
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_handle.upgrade() {
+                                let mut current_video: Vec<VideoEntry> =
+                                    ui.get_videos().iter().collect();
+
+                                if let Some(item) = current_video.iter_mut().find(|v| v.link == link) {
+                                    if let Ok(img) = image::load_from_memory(&bytes) {
+                                        let rgba = img.to_rgba8();
+                                        let (w, h) = rgba.dimensions();
+
+                                        item.thumbnail = slint::Image::from_rgba8(
+                                            SharedPixelBuffer::clone_from_slice(rgba.as_raw(), w, h),
+                                        );
+
+                                        let model =
+                                            std::rc::Rc::new(slint::VecModel::from(current_video));
+                                        ui.set_videos(model.into());
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            }
         }
     });
 
@@ -288,35 +351,12 @@ pub fn setup_ui(
         .uploaded_videos
         .iter()
     {
-        let video_id = video.id.clone().unwrap_or_default();
-        let link = format!("https://www.youtube.com/watch?v={}", video_id);
-        let mut title = String::from("Fehler");
-        let mut privacy = PrivacyStatus::Private;
-        if let Some(snippet) = &video.snippet {
-            title = snippet.title.clone().unwrap_or_default();
-        };
-        if let Some(status) = &video.status {
-            if let Some(visibility) = &status.privacy_status {
-                match visibility.as_str() {
-                    "public" => privacy = PrivacyStatus::Public,
-                    "unlisted" => privacy = PrivacyStatus::Unlisted,
-                    _ => privacy = PrivacyStatus::Private,
-                }
-            }
-        };
-        let thumbnail_url = video
-            .snippet
-            .as_ref()
-            .and_then(|s| s.thumbnails.as_ref())
-            .and_then(|t| t.medium.as_ref())
-            .and_then(|m| m.url.as_ref())
-            .cloned()
-            .unwrap_or_default();
         let video_entry = VideoChannelEntry {
-            title,
-            link,
-            visibility: privacy.to_useable_string().to_string(),
-            thumbnail_url,
+            title: video.title.clone(),
+            link: video.link.clone(),
+            visibility: video.visibility.clone(),
+            thumbnail_url: video.thumbnail_url.clone(),
+            thumbnail_bytes: video.thumbnail_bytes.clone(),
         };
         let _ = video_tx.try_send(video_entry);
     }

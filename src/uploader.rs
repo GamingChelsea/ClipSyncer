@@ -118,7 +118,10 @@ pub async fn run_background_uploader(
 
     let _ = &ui_weak.upgrade().map(|ui| ui.set_logged_in(false));
 
-    let scopes = &["https://www.googleapis.com/auth/youtube.upload"];
+    let scopes = &[
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+    ];
     auth.token(scopes)
         .await
         .expect("Fehler bei der Anmeldung im Browser");
@@ -151,7 +154,97 @@ pub async fn run_background_uploader(
         hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
             .build(connector);
 
+    let auth_clone = auth.clone();
     let hub = google_youtube3::api::YouTube::new(client, auth);
+
+    let missing_ids: Vec<String> = {
+        let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
+        guard.uploaded_videos.iter()
+            .filter(|v| v.thumbnail_bytes.is_none())
+            .map(|v| v.id.clone())
+            .collect()
+    };
+
+    if !missing_ids.is_empty() {
+        info!("Hintergrund-Task zum Nachladen von {} fehlenden Vorschaubildern gestartet...", missing_ids.len());
+        let client = reqwest::Client::new();
+        let scopes = &[
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ];
+        for chunk in missing_ids.chunks(50) {
+            let parts = vec!["snippet".to_string()];
+            let mut request = hub.videos().list(&parts);
+            for id in chunk {
+                request = request.add_id(id);
+            }
+            match request.doit().await {
+                Ok((_response, video_list)) => {
+                    if let Some(items) = video_list.items {
+                        for video in items {
+                            if let Some(video_id) = &video.id {
+                                if let Some(snippet) = &video.snippet {
+                                    let thumbnail_url = snippet.thumbnails.as_ref()
+                                        .and_then(|t| t.medium.as_ref().or(t.default.as_ref()).or(t.high.as_ref()))
+                                        .and_then(|thumb| thumb.url.clone())
+                                        .unwrap_or_default();
+                                    
+                                    if !thumbnail_url.is_empty() {
+                                        let mut token_str = None;
+                                        if let Ok(token_res) = auth_clone.token(scopes).await {
+                                            token_str = token_res.token().map(String::from);
+                                        }
+                                        
+                                        let mut req = client.get(&thumbnail_url);
+                                        if let Some(ref t) = token_str {
+                                            req = req.bearer_auth(t);
+                                        }
+                                        
+                                        match req.send().await {
+                                            Ok(resp) if resp.status().is_success() => {
+                                                if let Ok(bytes) = resp.bytes().await {
+                                                    let bytes_vec = bytes.to_vec();
+                                                    info!("Thumbnail für Video {} erfolgreich nachgeladen ({} Bytes)", video_id, bytes_vec.len());
+                                                    
+                                                    let mut updated_entry = None;
+                                                    if let Ok(mut guard) = storage.lock() {
+                                                        if let Some(v) = guard.uploaded_videos.iter_mut().find(|x| x.id == *video_id) {
+                                                            v.thumbnail_bytes = Some(bytes_vec.clone());
+                                                            v.thumbnail_url = thumbnail_url.clone();
+                                                            updated_entry = Some(VideoChannelEntry {
+                                                                title: v.title.clone(),
+                                                                link: v.link.clone(),
+                                                                visibility: v.visibility.clone(),
+                                                                thumbnail_url: thumbnail_url.clone(),
+                                                                thumbnail_bytes: Some(bytes_vec),
+                                                            });
+                                                        }
+                                                    }
+                                                    if let Some(entry) = updated_entry {
+                                                        save_storage(&storage);
+                                                        let _ = video_tx.send(entry).await;
+                                                    }
+                                                }
+                                            }
+                                            Ok(resp) => {
+                                                error!("Fehler beim Download des Thumbnails für {} (Status {})", video_id, resp.status());
+                                            }
+                                            Err(e) => {
+                                                error!("Fehler beim Senden des Thumbnail-Requests für {}: {:?}", video_id, e);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Fehler beim Abrufen der Video-Details für Thumbnail-Update: {:?}", e);
+                }
+            }
+        }
+    }
 
     let _ = path_rx.borrow_and_update();
     let _ = del_rx.borrow_and_update();
@@ -159,7 +252,7 @@ pub async fn run_background_uploader(
 
     info!("Führe erste Clip-Überprüfung beim App-Start aus...");
     perform_check_and_upload(
-        &hub, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false,
+        &hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false,
     )
     .await;
 
@@ -176,7 +269,7 @@ pub async fn run_background_uploader(
                 let _new_path = path_rx.borrow_and_update().clone();
                 info!("Pfad wurde im UI geändert! Breche Warten ab und starte sofort neue Prüfung.");
                 interval.reset();
-                perform_check_and_upload(&hub, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, true).await;
+                perform_check_and_upload(&hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, true).await;
             }
 
             res = del_rx.changed() => {
@@ -213,7 +306,7 @@ pub async fn run_background_uploader(
 
             _ = interval.tick() => {
                 info!("3 Stunden sind um. Starte geplante automatische Überprüfung...");
-                perform_check_and_upload(&hub, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false).await;
+                perform_check_and_upload(&hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false).await;
             }
         }
     }
@@ -221,6 +314,7 @@ pub async fn run_background_uploader(
 
 async fn perform_check_and_upload(
     hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
+    auth: &yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
     path_rx: &mut Receiver<Option<PathBuf>>,
     path_tx: &Arc<Sender<Option<PathBuf>>>,
     del_rx: &Receiver<bool>,
@@ -315,7 +409,7 @@ async fn perform_check_and_upload(
             pending_clips.len()
         );
 
-        let mut chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today as usize));
+        let mut chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today));
         if upload_all {
             chunk_size = pending_clips.len();
         }
@@ -371,26 +465,31 @@ async fn perform_check_and_upload(
                 }
             };
 
-            let mut video = google_youtube3::api::Video::default();
-            let mut details = google_youtube3::api::VideoSnippet::default();
-            details.title = Some(format!(
-                "Clip Compilation - {}",
-                path_to_string(&clip_paket[0])
-            ));
-
-            let names: Vec<String> = clip_paket.iter().map(path_to_string).collect();
+            let names: Vec<String> = clip_paket.iter().map(|p| path_to_string(p)).collect();
             let names_combined = names.join(", ");
-            details.description = Some(format!(
-                "Clip Compilation von den Videodateien: {}",
-                names_combined
-            ));
+            let details = google_youtube3::api::VideoSnippet {
+                title: Some(format!(
+                    "Clip Compilation - {}",
+                    path_to_string(&clip_paket[0])
+                )),
+                description: Some(format!(
+                    "Clip Compilation von den Videodateien: {}",
+                    names_combined
+                )),
+                category_id: Some("22".to_string()),
+                ..Default::default()
+            };
 
-            details.category_id = Some("22".to_string());
-            video.snippet = Some(details);
+            let video_status = google_youtube3::api::VideoStatus {
+                privacy_status: Some(ps_rx.borrow().to_useable_string().to_string()),
+                ..Default::default()
+            };
 
-            let mut video_status = google_youtube3::api::VideoStatus::default();
-            video_status.privacy_status = Some(ps_rx.borrow().to_useable_string().to_string());
-            video.status = Some(video_status);
+            let video = google_youtube3::api::Video {
+                snippet: Some(details),
+                status: Some(video_status),
+                ..Default::default()
+            };
 
             let upload_result =
                 upload_video(video, final_processed_video.to_path_buf(), hub, video_file).await;
@@ -415,34 +514,80 @@ async fn perform_check_and_upload(
                 if let Some(snippet) = &video.snippet {
                     title = snippet.title.clone().unwrap_or_default();
                 };
-                if let Some(status) = &video.status {
-                    if let Some(visibility) = &status.privacy_status {
-                        match visibility.as_str() {
-                            "public" => privacy = PrivacyStatus::Public,
-                            "unlisted" => privacy = PrivacyStatus::Unlisted,
-                            _ => privacy = PrivacyStatus::Private,
-                        }
+                if let Some(visibility) = video.status.as_ref().and_then(|s| s.privacy_status.as_deref()) {
+                    match visibility {
+                        "public" => privacy = PrivacyStatus::Public,
+                        "unlisted" => privacy = PrivacyStatus::Unlisted,
+                        _ => privacy = PrivacyStatus::Private,
                     }
-                };
+                }
                 let thumbnail_url = video
                     .snippet
                     .as_ref()
                     .and_then(|s| s.thumbnails.as_ref())
-                    .and_then(|t| t.medium.as_ref())
+                    .and_then(|t| t.medium.as_ref().or(t.default.as_ref()).or(t.high.as_ref()))
                     .and_then(|m| m.url.as_ref())
                     .cloned()
                     .unwrap_or_default();
+
+                let mut thumbnail_bytes = None;
+                if !thumbnail_url.is_empty() {
+                    let client = reqwest::Client::new();
+                    let scopes = &[
+                        "https://www.googleapis.com/auth/youtube.upload",
+                        "https://www.googleapis.com/auth/youtube.readonly",
+                    ];
+                    let max_attempts = 10;
+                    let delay = std::time::Duration::from_secs(10);
+                    
+                    for attempt in 1..=max_attempts {
+                        if let Ok(token_res) = auth.token(scopes).await {
+                            if let Some(token_str) = token_res.token() {
+                                match client.get(&thumbnail_url)
+                                    .bearer_auth(token_str)
+                                    .send()
+                                    .await
+                                {
+                                    Ok(response) if response.status().is_success() => {
+                                        if let Ok(bytes) = response.bytes().await {
+                                            thumbnail_bytes = Some(bytes.to_vec());
+                                            break;
+                                        }
+                                    }
+                                    _ => {
+                                        tracing::info!(
+                                            "Thumbnail für {} noch nicht bereit (Versuch {}/{}).",
+                                            title, attempt, max_attempts
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if attempt < max_attempts {
+                            tokio::time::sleep(delay).await;
+                        }
+                    }
+                }
+
                 let video_entry = VideoChannelEntry {
-                    title,
-                    link,
+                    title: title.clone(),
+                    link: link.clone(),
                     visibility: privacy.to_useable_string().to_string(),
-                    thumbnail_url,
+                    thumbnail_url: thumbnail_url.clone(),
+                    thumbnail_bytes: thumbnail_bytes.clone(),
                 };
                 let _ = video_tx.send(video_entry).await;
                 if let Ok(mut storage_a) = storage.lock() {
                     storage_a.uploads_today = uploads_today;
                     storage_a.last_upload_date = current_time;
-                    storage_a.uploaded_videos.push(video);
+                    storage_a.uploaded_videos.push(crate::storage::CachedVideo {
+                        id: video_id,
+                        title,
+                        link,
+                        visibility: privacy.to_useable_string().to_string(),
+                        thumbnail_url,
+                        thumbnail_bytes,
+                    });
                     storage_a.upload_all = false;
                 };
                 save_storage(storage);

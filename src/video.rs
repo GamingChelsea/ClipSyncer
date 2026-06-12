@@ -24,7 +24,7 @@ pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<Pa
             }
         }
 
-        if file_path.extension() == Some(&OsStr::new("mp4")) {
+        if file_path.extension() == Some(OsStr::new("mp4")) {
             let file_name_str = path_to_string(&file_path);
             if !uploaded_files.contains(&file_name_str) {
                 pending.push(file_path);
@@ -69,10 +69,7 @@ pub async fn merge_multiple_videos(
             if normalize_clip(&clip, tmp_file.path(), target_w, target_h, video_encoder).await {
                 Ok((index, tmp_file))
             } else {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Normalisierung fehlgeschlagen",
-                ))
+                Err(std::io::Error::other("Normalisierung fehlgeschlagen"))
             }
         });
     }
@@ -336,7 +333,7 @@ pub async fn process_video_file(input_file_path: &Path, output_file_path: &Path)
         .arg("-i")
         .arg(input_file_path)
         .args(["-c", "copy", "-movflags", "+faststart"])
-        .arg(&output_file_path)
+        .arg(output_file_path)
         .stdout(std::process::Stdio::null())
         .status()
         .await;
@@ -356,7 +353,7 @@ pub async fn process_video_file(input_file_path: &Path, output_file_path: &Path)
     }
 }
 
-pub fn path_to_string(file_path: &PathBuf) -> String {
+pub fn path_to_string(file_path: &Path) -> String {
     file_path
         .file_name()
         .map(|os_str| os_str.to_string_lossy().into_owned())

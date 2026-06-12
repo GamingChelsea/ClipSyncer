@@ -12,6 +12,7 @@ pub struct VideoChannelEntry {
     pub link: String,
     pub visibility: String,
     pub thumbnail_url: String,
+    pub thumbnail_bytes: Option<Vec<u8>>,
 }
 mod logger;
 mod storage;
