@@ -128,6 +128,10 @@ pub struct AppStorage {
     pub video_encoder: VideoEncoder,
     pub client_secret: Option<yup_oauth2::ApplicationSecret>,
     pub token_cache: Option<String>,
+    pub token_cache_2: Option<String>,
+    pub uploads_today_2: usize,
+    pub last_upload_date_2: chrono::DateTime<chrono::Local>,
+    pub active_account: usize,
 }
 
 impl Default for AppStorage {
@@ -144,13 +148,18 @@ impl Default for AppStorage {
             video_encoder: VideoEncoder::Auto,
             client_secret: None,
             token_cache: None,
+            token_cache_2: None,
+            uploads_today_2: 0,
+            last_upload_date_2: chrono::Local::now() - chrono::Duration::hours(4),
+            active_account: 0,
         }
     }
 }
 
 pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
     let storage_guard = storage.lock().expect("Fehler beim Storage Guard");
-    let ron_string = ron::ser::to_string_pretty(&*storage_guard, ron::ser::PrettyConfig::default())
+    let config = ron::ser::PrettyConfig::default().compact_arrays(true);
+    let ron_string = ron::ser::to_string_pretty(&*storage_guard, config)
         .expect("Fehler bei der RON Konvertierung");
     std::fs::write("config.ron", ron_string).expect("Fehler bei der Config Speicherung");
     info!("Gespeichert");

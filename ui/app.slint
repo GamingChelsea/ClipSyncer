@@ -77,6 +77,7 @@ component SettingsEntry inherits Rectangle {
 
 export component AppWindow inherits Window {
     title: "Clip Syncer";
+    icon: @image-url("../assets/icon.png");
     preferred-width: 650px;
     min-width: 550px;
     preferred-height: 400px;
@@ -102,6 +103,8 @@ export component AppWindow inherits Window {
     in property <bool> needs_client_secret: false;
     callback select_client_secret();
     in-out property <string> login_url: "";
+    in-out property <int> active_account_index: 0;
+    callback active_account_change(int);
 
     Main := ScrollView {
         VerticalLayout {
@@ -306,6 +309,23 @@ export component AppWindow inherits Window {
                                 ];
                                 selected-index <=> visibility_selection_index;
                                 changed(i) => { privacy_change(i) }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Aktiver Account:";
+                            description-text: "Aktuell genutzter Google-Account";
+
+                            Select {
+                                items: [
+                                    { label: "Hauptaccount", value: "0" },
+                                    { label: "Zweitaccount", value: "1" },
+                                    { label: "Automatisch", value: "2" }
+                                ];
+                                selected-index <=> active_account_index;
+                                changed(i) => { active_account_change(i) }
                             }
                         }
 

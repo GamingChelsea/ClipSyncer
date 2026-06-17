@@ -56,11 +56,202 @@ pub type GoogleClient = google_youtube3::hyper_util::client::legacy::Client<
     BoxBody<Bytes, google_youtube3::hyper::Error>,
 >;
 
+#[derive(Debug)]
+pub enum UploadError {
+    LimitExceeded,
+    Other,
+}
+
+fn is_upload_limit_exceeded(err: &google_youtube3::Error) -> bool {
+    if let google_youtube3::Error::BadRequest(value) = err {
+        if let Some(error_obj) = value.get("error") {
+            if let Some(errors_arr) = error_obj.get("errors").and_then(|e| e.as_array()) {
+                for error_entry in errors_arr {
+                    if let Some(reason) = error_entry.get("reason").and_then(|r| r.as_str()) {
+                        if reason == "uploadLimitExceeded" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+async fn save_tokens(storage: &Arc<Mutex<AppStorage>>, temp_path: &std::path::Path, active_account: usize) {
+    if let Ok(updated_tokens) = tokio::fs::read_to_string(temp_path).await {
+        {
+            let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+            if active_account == 0 {
+                guard.token_cache = Some(updated_tokens);
+            } else {
+                guard.token_cache_2 = Some(updated_tokens);
+            }
+        }
+        save_storage(storage);
+    }
+}
+
+async fn get_youtube_client(
+    storage: &Arc<Mutex<AppStorage>>,
+    ui_weak: &slint::Weak<AppWindow>,
+    secret: yup_oauth2::ApplicationSecret,
+    temp_path: &std::path::Path,
+    active_account: usize,
+) -> Option<(
+    google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
+    yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
+)> {
+    let token_content = {
+        let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+        let cache = if active_account == 0 {
+            &guard.token_cache
+        } else {
+            &guard.token_cache_2
+        };
+        match cache {
+            Some(s) if !s.trim().is_empty() => s.clone(),
+            _ => "[]".to_string(),
+        }
+    };
+
+    if let Err(e) = tokio::fs::write(temp_path, token_content).await {
+        error!("Fehler beim Schreiben des Token-Caches: {:?}", e);
+        return None;
+    }
+
+    let ui_weak_login = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_login.upgrade() {
+            ui.set_logged_in(false);
+        }
+    });
+
+    let auth = match InstalledFlowAuthenticator::builder(
+        secret,
+        yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
+    )
+    .flow_delegate(Box::new(SlintOAuthDelegate {
+        ui_weak: ui_weak.clone(),
+    }))
+    .persist_tokens_to_disk(temp_path)
+    .build()
+    .await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            error!("Fehler bei der Authentisierung: {:?}", e);
+            return None;
+        }
+    };
+
+    let scopes = &[
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly",
+    ];
+
+    match auth.token(scopes).await {
+        Ok(_) => {
+            let ui_weak_login = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_login.upgrade() {
+                    ui.set_logged_in(true);
+                    ui.set_login_url("".into());
+                }
+            });
+
+            save_tokens(storage, temp_path, active_account).await;
+
+            let connector = google_youtube3::hyper_rustls::HttpsConnectorBuilder::new()
+                .with_native_roots()
+                .expect("Zertifikat fehlerhaft")
+                .https_only()
+                .enable_http1()
+                .build();
+
+            let client: GoogleClient =
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build(connector);
+
+            let hub = google_youtube3::api::YouTube::new(client, auth.clone());
+            Some((hub, auth))
+        }
+        Err(e) => {
+            error!("Fehler bei der Anmeldung im Browser: {:?}", e);
+            None
+        }
+    }
+}
+
+fn determine_automatic_account(storage: &Arc<Mutex<AppStorage>>) -> usize {
+    let guard = storage.lock().expect("Fehler beim Lesen");
+    if guard.uploads_today >= 6 {
+        1
+    } else {
+        0
+    }
+}
+
+async fn switch_account(
+    hub: &mut google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
+    auth: &mut yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
+    temp_path: &mut PathBuf,
+    active_account: &mut usize,
+    secret: &yup_oauth2::ApplicationSecret,
+    temp_dir_path: &PathBuf,
+    storage: &Arc<Mutex<AppStorage>>,
+    ui_weak: &slint::Weak<AppWindow>,
+    new_account: usize,
+) -> bool {
+    info!("Wechsle zu Account {}", new_account + 1);
+
+    let selected_account = {
+        let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+        guard.active_account
+    };
+
+    if selected_account != 2 {
+        {
+            let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
+            guard.active_account = new_account;
+        }
+        save_storage(storage);
+    }
+
+    *active_account = new_account;
+    *temp_path = if new_account == 0 {
+        temp_dir_path.join("tokens_1.json")
+    } else {
+        temp_dir_path.join("tokens_2.json")
+    };
+
+    if let Some((new_hub, new_auth)) = get_youtube_client(storage, ui_weak, secret.clone(), temp_path, new_account).await {
+        *hub = new_hub;
+        *auth = new_auth;
+
+        if selected_account != 2 {
+            let ui_weak_clone = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_clone.upgrade() {
+                    ui.set_active_account_index(new_account as i32);
+                }
+            });
+        }
+
+        true
+    } else {
+        error!("Fehler beim Wechseln des YouTube-Clients zu Account {}", new_account + 1);
+        false
+    }
+}
+
 pub async fn run_background_uploader(
     path_rx: &mut Receiver<Option<PathBuf>>,
     path_tx: Arc<Sender<Option<PathBuf>>>,
     mut del_rx: Receiver<bool>,
     mut ps_rx: Receiver<PrivacyStatus>,
+    mut active_account_rx: Receiver<usize>,
     video_tx: Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     storage: Arc<Mutex<AppStorage>>,
     ui_weak: slint::Weak<AppWindow>,
@@ -70,13 +261,11 @@ pub async fn run_background_uploader(
         .expect("Fehler bei der Initialisierung von rustls");
 
     let mut secret_opt;
-    let mut initial_token_json;
 
     loop {
         {
             let guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
             secret_opt = guard.client_secret.clone();
-            initial_token_json = guard.token_cache.clone();
         }
 
         if secret_opt.is_some() {
@@ -95,67 +284,32 @@ pub async fn run_background_uploader(
 
     let secret = secret_opt.unwrap();
 
-    let temp_token_file =
-        tempfile::NamedTempFile::new().expect("Fehler beim Erstellen der temporären Token-Datei");
-    let temp_path = temp_token_file.path().to_path_buf();
+    let temp_dir =
+        tempfile::tempdir().expect("Fehler beim Erstellen des temporären Ordners");
+    let temp_dir_path = temp_dir.path().to_path_buf();
 
-    let token_content = initial_token_json.unwrap_or_else(|| "[]".to_string());
-    tokio::fs::write(&temp_path, token_content)
-        .await
-        .expect("Fehler beim Schreiben des Token-Caches");
-
-    let auth = InstalledFlowAuthenticator::builder(
-        secret,
-        yup_oauth2::InstalledFlowReturnMethod::HTTPRedirect,
-    )
-    .flow_delegate(Box::new(SlintOAuthDelegate {
-        ui_weak: ui_weak.clone(),
-    }))
-    .persist_tokens_to_disk(&temp_path)
-    .build()
-    .await
-    .expect("Fehler bei der Authentisierung");
-
-    let _ = &ui_weak.upgrade().map(|ui| ui.set_logged_in(false));
-
-    let scopes = &[
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly",
-    ];
-    auth.token(scopes)
-        .await
-        .expect("Fehler bei der Anmeldung im Browser");
-
-    let ui_weak_login = ui_weak.clone();
-
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_weak_login.upgrade() {
-            ui.set_logged_in(true);
-            ui.set_login_url("".into());
+    let mut active_account = {
+        let guard = storage.lock().expect("Fehler beim Lesen");
+        let sel = guard.active_account;
+        if sel == 2 {
+            determine_automatic_account(&storage)
+        } else {
+            sel
         }
-    });
+    };
 
-    if let Ok(updated_tokens) = tokio::fs::read_to_string(&temp_path).await {
-        {
-            let mut guard = storage.lock().expect("Fehler auf AppStorage zuzugreifen");
-            guard.token_cache = Some(updated_tokens);
+    let mut temp_path = if active_account == 0 {
+        temp_dir_path.join("tokens_1.json")
+    } else {
+        temp_dir_path.join("tokens_2.json")
+    };
+
+    let (mut hub, mut auth) = loop {
+        if let Some(res) = get_youtube_client(&storage, &ui_weak, secret.clone(), &temp_path, active_account).await {
+            break res;
         }
-        save_storage(&storage);
-    }
-
-    let connector = google_youtube3::hyper_rustls::HttpsConnectorBuilder::new()
-        .with_native_roots()
-        .expect("Zertifikat fehlerhaft")
-        .https_only()
-        .enable_http1()
-        .build();
-
-    let client: GoogleClient =
-        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-            .build(connector);
-
-    let auth_clone = auth.clone();
-    let hub = google_youtube3::api::YouTube::new(client, auth);
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    };
 
     let missing_ids: Vec<String> = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
@@ -191,8 +345,9 @@ pub async fn run_background_uploader(
                                     
                                     if !thumbnail_url.is_empty() {
                                         let mut token_str = None;
-                                        if let Ok(token_res) = auth_clone.token(scopes).await {
+                                        if let Ok(token_res) = auth.token(scopes).await {
                                             token_str = token_res.token().map(String::from);
+                                            save_tokens(&storage, &temp_path, active_account).await;
                                         }
                                         
                                         let mut req = client.get(&thumbnail_url);
@@ -249,10 +404,24 @@ pub async fn run_background_uploader(
     let _ = path_rx.borrow_and_update();
     let _ = del_rx.borrow_and_update();
     let _ = ps_rx.borrow_and_update();
+    let _ = active_account_rx.borrow_and_update();
 
     info!("Führe erste Clip-Überprüfung beim App-Start aus...");
     perform_check_and_upload(
-        &hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false,
+        &mut hub,
+        &mut auth,
+        &mut temp_path,
+        &mut active_account,
+        &secret,
+        &temp_dir_path,
+        path_rx,
+        &path_tx,
+        &del_rx,
+        &ps_rx,
+        &video_tx,
+        &storage,
+        &ui_weak,
+        false,
     )
     .await;
 
@@ -269,7 +438,22 @@ pub async fn run_background_uploader(
                 let _new_path = path_rx.borrow_and_update().clone();
                 info!("Pfad wurde im UI geändert! Breche Warten ab und starte sofort neue Prüfung.");
                 interval.reset();
-                perform_check_and_upload(&hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, true).await;
+                perform_check_and_upload(
+                    &mut hub,
+                    &mut auth,
+                    &mut temp_path,
+                    &mut active_account,
+                    &secret,
+                    &temp_dir_path,
+                    path_rx,
+                    &path_tx,
+                    &del_rx,
+                    &ps_rx,
+                    &video_tx,
+                    &storage,
+                    &ui_weak,
+                    true,
+                ).await;
             }
 
             res = del_rx.changed() => {
@@ -288,33 +472,84 @@ pub async fn run_background_uploader(
                 });
             }
 
-            res = ps_rx.changed() => {
+            res = active_account_rx.changed() => {
                 if res.is_err() {
                     return;
                 }
-                let new_val = *ps_rx.borrow_and_update();
-                info!("Sichtbarkeit im UI geändert auf: {:?}", new_val);
+                let new_selected = *active_account_rx.borrow_and_update();
+                let new_account = if new_selected == 2 {
+                    determine_automatic_account(&storage)
+                } else {
+                    new_selected
+                };
 
-                let storage_clone = Arc::clone(&storage);
-                tokio::task::spawn_blocking(move || {
-                    if let Ok(mut guard) = storage_clone.lock() {
-                        guard.privacy_status = new_val;
+
+
+                if new_account != active_account {
+                    info!("Aktiver Account im UI geändert auf: {}", new_account + 1);
+                    if switch_account(
+                        &mut hub,
+                        &mut auth,
+                        &mut temp_path,
+                        &mut active_account,
+                        &secret,
+                        &temp_dir_path,
+                        &storage,
+                        &ui_weak,
+                        new_account,
+                    ).await {
+                        info!("Account-Wechsel erfolgreich. Starte sofort neue Prüfung.");
+                        interval.reset();
+                        perform_check_and_upload(
+                            &mut hub,
+                            &mut auth,
+                            &mut temp_path,
+                            &mut active_account,
+                            &secret,
+                            &temp_dir_path,
+                            path_rx,
+                            &path_tx,
+                            &del_rx,
+                            &ps_rx,
+                            &video_tx,
+                            &storage,
+                            &ui_weak,
+                            true,
+                        ).await;
                     }
-                    save_storage(&storage_clone);
-                });
+                }
             }
 
             _ = interval.tick() => {
                 info!("3 Stunden sind um. Starte geplante automatische Überprüfung...");
-                perform_check_and_upload(&hub, &auth_clone, path_rx, &path_tx, &del_rx, &ps_rx, &video_tx, &storage, &ui_weak, false).await;
+                perform_check_and_upload(
+                    &mut hub,
+                    &mut auth,
+                    &mut temp_path,
+                    &mut active_account,
+                    &secret,
+                    &temp_dir_path,
+                    path_rx,
+                    &path_tx,
+                    &del_rx,
+                    &ps_rx,
+                    &video_tx,
+                    &storage,
+                    &ui_weak,
+                    false,
+                ).await;
             }
         }
     }
 }
 
 async fn perform_check_and_upload(
-    hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
-    auth: &yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
+    hub: &mut google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
+    auth: &mut yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
+    temp_path: &mut PathBuf,
+    active_account: &mut usize,
+    secret: &yup_oauth2::ApplicationSecret,
+    temp_dir_path: &PathBuf,
     path_rx: &mut Receiver<Option<PathBuf>>,
     path_tx: &Arc<Sender<Option<PathBuf>>>,
     del_rx: &Receiver<bool>,
@@ -325,29 +560,72 @@ async fn perform_check_and_upload(
     ignore_time_limit: bool,
 ) {
     let now = chrono::Local::now();
-    let mut uploads_today = 0;
-    let mut last_upload = chrono::DateTime::default();
     let mut upload_all = false;
 
+    let mut date_changed = false;
     if let Ok(mut storage_ok) = storage.lock() {
-        last_upload = storage_ok.last_upload_date;
-        uploads_today = storage_ok.uploads_today;
+        if now.date_naive() != storage_ok.last_upload_date.date_naive() {
+            info!("Neuer Tag; Setze Upload-Limit für Account 1 zurück");
+            storage_ok.uploads_today = 0;
+            storage_ok.last_upload_date = now;
+            date_changed = true;
+        }
+        if now.date_naive() != storage_ok.last_upload_date_2.date_naive() {
+            info!("Neuer Tag; Setze Upload-Limit für Account 2 zurück");
+            storage_ok.uploads_today_2 = 0;
+            storage_ok.last_upload_date_2 = now;
+            date_changed = true;
+        }
         upload_all = storage_ok.upload_all;
         if upload_all {
             storage_ok.upload_all = false;
         }
     }
-
-    if now.date_naive() != last_upload.date_naive() {
-        info!("Neuer Tag; Upload auf 0");
-        uploads_today = 0;
-        last_upload = now;
-        if let Ok(mut storage_ok) = storage.lock() {
-            storage_ok.last_upload_date = now;
-            storage_ok.uploads_today = uploads_today;
-        }
+    if date_changed {
         save_storage(storage);
     }
+
+    let selected_account = {
+        let guard = storage.lock().expect("Fehler");
+        guard.active_account
+    };
+
+    let mut check_limit = true;
+    while check_limit {
+        let current_uploads_today = {
+            let guard = storage.lock().expect("Fehler");
+            if *active_account == 0 {
+                guard.uploads_today
+            } else {
+                guard.uploads_today_2
+            }
+        };
+
+        if current_uploads_today >= 6 {
+            if selected_account == 2 && *active_account == 0 {
+                info!("Hauptaccount hat sein Limit erreicht. Wechsle automatisch auf Zweitaccount (Modus: Automatisch).");
+                if switch_account(hub, auth, temp_path, active_account, secret, temp_dir_path, storage, ui_weak, 1).await {
+                    continue;
+                }
+            } else {
+                if *active_account == 0 {
+                    info!("Hauptaccount hat sein Limit erreicht.");
+                } else {
+                    info!("Zweitaccount hat sein Limit erreicht.");
+                }
+            }
+        }
+        check_limit = false;
+    }
+
+    let (uploads_today, last_upload) = {
+        let guard = storage.lock().expect("Fehler");
+        if *active_account == 0 {
+            (guard.uploads_today, guard.last_upload_date)
+        } else {
+            (guard.uploads_today_2, guard.last_upload_date_2)
+        }
+    };
 
     let bypass_time_limit = ignore_time_limit || upload_all;
 
@@ -401,9 +679,7 @@ async fn perform_check_and_upload(
 
     let pending_clips = get_pending_clips(&clip_folder, &uploaded_files_clone).await;
 
-    if uploads_today >= 6 {
-        info!("Upload Limit für heute erreicht (6/6). Warte auf nächsten Tag.");
-    } else if !pending_clips.is_empty() {
+    if !pending_clips.is_empty() {
         info!(
             "Es wurden {} Clips zum hochladen gefunden",
             pending_clips.len()
@@ -414,8 +690,30 @@ async fn perform_check_and_upload(
             chunk_size = pending_clips.len();
         }
         for clip_paket in pending_clips.chunks(chunk_size) {
-            if uploads_today >= 6 {
-                break;
+            let mut current_uploads_today = {
+                let guard = storage.lock().expect("Fehler");
+                if *active_account == 0 {
+                    guard.uploads_today
+                } else {
+                    guard.uploads_today_2
+                }
+            };
+
+            if current_uploads_today >= 6 {
+                if selected_account == 2 && *active_account == 0 {
+                    info!("Hauptaccount-Limit im Loop erreicht. Wechsle auf Zweitaccount (Modus: Automatisch).");
+                    if switch_account(hub, auth, temp_path, active_account, secret, temp_dir_path, storage, ui_weak, 1).await {
+                        let guard = storage.lock().expect("Fehler");
+                        current_uploads_today = guard.uploads_today_2;
+                    } else {
+                        break;
+                    }
+                }
+
+                if current_uploads_today >= 6 {
+                    info!("Aktiver Account voll. Breche Upload-Loop ab.");
+                    break;
+                }
             }
 
             info!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
@@ -493,106 +791,69 @@ async fn perform_check_and_upload(
 
             let upload_result =
                 upload_video(video, final_processed_video.to_path_buf(), hub, video_file).await;
-            if let Ok(video) = upload_result {
-                for clip in clip_paket {
-                    let should_delete = *del_rx.borrow();
+            match upload_result {
+                Ok(video) => {
+                    handle_successful_upload(video, clip_paket, storage, del_rx, video_tx, auth, temp_path, *active_account).await;
+                }
+                Err(UploadError::LimitExceeded) => {
+                    info!("API meldet Limit überschritten.");
                     {
-                        let mut guard = storage.lock().expect("Fehler beim Aufruf von AppStorage");
-                        guard.uploaded_files.push(path_to_string(clip));
+                        let mut guard = storage.lock().expect("Fehler");
+                        if *active_account == 0 {
+                            guard.uploads_today = 6;
+                        } else {
+                            guard.uploads_today_2 = 6;
+                        }
                     }
+                    save_storage(storage);
 
-                    if should_delete {
-                        let _ = tokio::fs::remove_file(clip).await;
-                    }
-                }
-                uploads_today += 1;
-                let current_time = chrono::Local::now();
-                let video_id = video.id.clone().unwrap_or_default();
-                let link = format!("https://www.youtube.com/watch?v={}", video_id);
-                let mut title = String::from("Fehler");
-                let mut privacy = PrivacyStatus::Private;
-                if let Some(snippet) = &video.snippet {
-                    title = snippet.title.clone().unwrap_or_default();
-                };
-                if let Some(visibility) = video.status.as_ref().and_then(|s| s.privacy_status.as_deref()) {
-                    match visibility {
-                        "public" => privacy = PrivacyStatus::Public,
-                        "unlisted" => privacy = PrivacyStatus::Unlisted,
-                        _ => privacy = PrivacyStatus::Private,
-                    }
-                }
-                let thumbnail_url = video
-                    .snippet
-                    .as_ref()
-                    .and_then(|s| s.thumbnails.as_ref())
-                    .and_then(|t| t.medium.as_ref().or(t.default.as_ref()).or(t.high.as_ref()))
-                    .and_then(|m| m.url.as_ref())
-                    .cloned()
-                    .unwrap_or_default();
-
-                let mut thumbnail_bytes = None;
-                if !thumbnail_url.is_empty() {
-                    let client = reqwest::Client::new();
-                    let scopes = &[
-                        "https://www.googleapis.com/auth/youtube.upload",
-                        "https://www.googleapis.com/auth/youtube.readonly",
-                    ];
-                    let max_attempts = 10;
-                    let delay = std::time::Duration::from_secs(10);
-                    
-                    for attempt in 1..=max_attempts {
-                        if let Ok(token_res) = auth.token(scopes).await {
-                            if let Some(token_str) = token_res.token() {
-                                match client.get(&thumbnail_url)
-                                    .bearer_auth(token_str)
-                                    .send()
-                                    .await
-                                {
-                                    Ok(response) if response.status().is_success() => {
-                                        if let Ok(bytes) = response.bytes().await {
-                                            thumbnail_bytes = Some(bytes.to_vec());
-                                            break;
-                                        }
-                                    }
-                                    _ => {
-                                        tracing::info!(
-                                            "Thumbnail für {} noch nicht bereit (Versuch {}/{}).",
-                                            title, attempt, max_attempts
-                                        );
-                                    }
+                    if selected_account == 2 && *active_account == 0 {
+                        info!("Wechsle automatisch zu Zweitaccount für einen erneuten Upload-Versuch (Modus: Automatisch).");
+                        if switch_account(hub, auth, temp_path, active_account, secret, temp_dir_path, storage, ui_weak, 1).await {
+                            let retry_video_file = match tokio::fs::File::open(final_processed_video).await {
+                                Ok(file) => file,
+                                Err(e) => {
+                                    error!(video = ?final_processed_video, error = ?e, "Datei konnte nicht erneut geöffnet werden");
+                                    continue;
                                 }
+                            };
+
+                            let details = google_youtube3::api::VideoSnippet {
+                                title: Some(format!(
+                                    "Clip Compilation - {}",
+                                    path_to_string(&clip_paket[0])
+                                )),
+                                description: Some(format!(
+                                    "Clip Compilation von den Videodateien: {}",
+                                    names_combined
+                                )),
+                                category_id: Some("22".to_string()),
+                                ..Default::default()
+                            };
+
+                            let video_status = google_youtube3::api::VideoStatus {
+                                privacy_status: Some(ps_rx.borrow().to_useable_string().to_string()),
+                                ..Default::default()
+                            };
+
+                            let video = google_youtube3::api::Video {
+                                snippet: Some(details),
+                                status: Some(video_status),
+                                ..Default::default()
+                            };
+
+                            let retry_result = upload_video(video, final_processed_video.to_path_buf(), hub, retry_video_file).await;
+                            if let Ok(video) = retry_result {
+                                handle_successful_upload(video, clip_paket, storage, del_rx, video_tx, auth, temp_path, *active_account).await;
+                                continue;
                             }
                         }
-                        if attempt < max_attempts {
-                            tokio::time::sleep(delay).await;
-                        }
                     }
+                    error!("Upload fehlgeschlagen wegen Limitüberschreitung und kein weiterer Account im automatischen Modus verfügbar.");
                 }
-
-                let video_entry = VideoChannelEntry {
-                    title: title.clone(),
-                    link: link.clone(),
-                    visibility: privacy.to_useable_string().to_string(),
-                    thumbnail_url: thumbnail_url.clone(),
-                    thumbnail_bytes: thumbnail_bytes.clone(),
-                };
-                let _ = video_tx.send(video_entry).await;
-                if let Ok(mut storage_a) = storage.lock() {
-                    storage_a.uploads_today = uploads_today;
-                    storage_a.last_upload_date = current_time;
-                    storage_a.uploaded_videos.push(crate::storage::CachedVideo {
-                        id: video_id,
-                        title,
-                        link,
-                        visibility: privacy.to_useable_string().to_string(),
-                        thumbnail_url,
-                        thumbnail_bytes,
-                    });
-                    storage_a.upload_all = false;
-                };
-                save_storage(storage);
-            } else {
-                error!("Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert.");
+                Err(UploadError::Other) => {
+                    error!("Upload fehlgeschlagen. Clips werden nicht als 'hochgeladen' markiert.");
+                }
             }
         }
     } else {
@@ -605,7 +866,7 @@ async fn upload_video(
     file_path: PathBuf,
     hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
     video_file: tokio::fs::File,
-) -> Result<google_youtube3::api::Video, ()> {
+) -> Result<google_youtube3::api::Video, UploadError> {
     info!(
         "Starte Upload von der Datei: {:?}:...",
         file_path.file_name()
@@ -629,7 +890,126 @@ async fn upload_video(
         }
         Err(error) => {
             error!(error = ?error, "Ein Fehler ist aufgetreten:");
-            Err(())
+            if is_upload_limit_exceeded(&error) {
+                Err(UploadError::LimitExceeded)
+            } else {
+                Err(UploadError::Other)
+            }
         }
     }
+}
+
+async fn handle_successful_upload(
+    video: google_youtube3::api::Video,
+    clip_paket: &[PathBuf],
+    storage: &Arc<Mutex<AppStorage>>,
+    del_rx: &Receiver<bool>,
+    video_tx: &Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
+    auth: &yup_oauth2::authenticator::Authenticator<HttpsConnector<HttpConnector>>,
+    temp_path: &std::path::Path,
+    active_account: usize,
+) {
+    for clip in clip_paket {
+        let should_delete = *del_rx.borrow();
+        {
+            let mut guard = storage.lock().expect("Fehler beim Aufruf von AppStorage");
+            guard.uploaded_files.push(path_to_string(clip));
+        }
+
+        if should_delete {
+            let _ = tokio::fs::remove_file(clip).await;
+        }
+    }
+
+    let current_time = chrono::Local::now();
+    let video_id = video.id.clone().unwrap_or_default();
+    let link = format!("https://www.youtube.com/watch?v={}", video_id);
+    let mut title = String::from("Fehler");
+    let mut privacy = PrivacyStatus::Private;
+    if let Some(snippet) = &video.snippet {
+        title = snippet.title.clone().unwrap_or_default();
+    };
+    if let Some(visibility) = video.status.as_ref().and_then(|s| s.privacy_status.as_deref()) {
+        match visibility {
+            "public" => privacy = PrivacyStatus::Public,
+            "unlisted" => privacy = PrivacyStatus::Unlisted,
+            _ => privacy = PrivacyStatus::Private,
+        }
+    }
+    let thumbnail_url = video
+        .snippet
+        .as_ref()
+        .and_then(|s| s.thumbnails.as_ref())
+        .and_then(|t| t.medium.as_ref().or(t.default.as_ref()).or(t.high.as_ref()))
+        .and_then(|m| m.url.as_ref())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut thumbnail_bytes = None;
+    if !thumbnail_url.is_empty() {
+        let client = reqwest::Client::new();
+        let scopes = &[
+            "https://www.googleapis.com/auth/youtube.upload",
+            "https://www.googleapis.com/auth/youtube.readonly",
+        ];
+        let max_attempts = 10;
+        let delay = std::time::Duration::from_secs(10);
+        
+        for attempt in 1..=max_attempts {
+            if let Ok(token_res) = auth.token(scopes).await {
+                save_tokens(storage, temp_path, active_account).await;
+                if let Some(token_str) = token_res.token() {
+                    match client.get(&thumbnail_url)
+                        .bearer_auth(token_str)
+                        .send()
+                        .await
+                    {
+                        Ok(response) if response.status().is_success() => {
+                            if let Ok(bytes) = response.bytes().await {
+                                thumbnail_bytes = Some(bytes.to_vec());
+                                break;
+                            }
+                        }
+                        _ => {
+                            tracing::info!(
+                                "Thumbnail für {} noch nicht bereit (Versuch {}/{}).",
+                                title, attempt, max_attempts
+                            );
+                        }
+                    }
+                }
+            }
+            if attempt < max_attempts {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    let video_entry = VideoChannelEntry {
+        title: title.clone(),
+        link: link.clone(),
+        visibility: privacy.to_useable_string().to_string(),
+        thumbnail_url: thumbnail_url.clone(),
+        thumbnail_bytes: thumbnail_bytes.clone(),
+    };
+    let _ = video_tx.send(video_entry).await;
+    if let Ok(mut storage_a) = storage.lock() {
+        if active_account == 0 {
+            storage_a.uploads_today += 1;
+            storage_a.last_upload_date = current_time;
+        } else {
+            storage_a.uploads_today_2 += 1;
+            storage_a.last_upload_date_2 = current_time;
+        }
+        storage_a.uploaded_videos.push(crate::storage::CachedVideo {
+            id: video_id,
+            title,
+            link,
+            visibility: privacy.to_useable_string().to_string(),
+            thumbnail_url,
+            thumbnail_bytes,
+        });
+        storage_a.upload_all = false;
+    };
+    save_storage(storage);
 }

@@ -12,6 +12,7 @@ pub fn setup_ui(
     path_tx: &Arc<Sender<Option<PathBuf>>>,
     del_tx: Arc<Sender<bool>>,
     ps_tx: Arc<Sender<PrivacyStatus>>,
+    active_account_tx: Arc<Sender<usize>>,
     mut log_rx: tokio::sync::mpsc::Receiver<LogEntry>,
     video_tx: &Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     mut video_rx: tokio::sync::mpsc::Receiver<VideoChannelEntry>,
@@ -295,6 +296,26 @@ pub fn setup_ui(
             .try_into()
             .expect("Fehler beim Setzen vom VideoEncoder"),
     );
+
+    let current_active_account = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.active_account
+    };
+
+    let storage_clone_active_account = Arc::clone(storage);
+    let active_account_tx_clone = active_account_tx.clone();
+    ui.on_active_account_change(move |index| {
+        let active_idx = index as usize;
+        let _ = active_account_tx_clone.send(active_idx);
+        let storage_for_thread = Arc::clone(&storage_clone_active_account);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.active_account = active_idx;
+            }
+            save_storage(&storage_for_thread);
+        });
+    });
+    ui.set_active_account_index(current_active_account as i32);
 
     let ui_close_handle = ui_weak.clone();
     ui.window().on_close_requested(move || {

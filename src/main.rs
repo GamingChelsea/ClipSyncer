@@ -37,6 +37,8 @@ fn main() {
         del_tx,
         ps_rx,
         ps_tx,
+        active_account_rx,
+        active_account_tx,
         log_rx,
         video_tx,
         video_rx,
@@ -54,6 +56,7 @@ fn main() {
         &path_tx,
         del_tx,
         ps_tx,
+        active_account_tx,
         log_rx,
         &video_tx,
         video_rx,
@@ -65,6 +68,7 @@ fn main() {
             path_tx,
             del_rx,
             ps_rx,
+            active_account_rx,
             video_tx,
             storage,
             ui_weak,
@@ -87,16 +91,19 @@ fn setup_channels(
     Arc<Sender<bool>>,
     Receiver<PrivacyStatus>,
     Arc<Sender<PrivacyStatus>>,
+    Receiver<usize>,
+    Arc<Sender<usize>>,
     tokio::sync::mpsc::Receiver<LogEntry>,
     Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     tokio::sync::mpsc::Receiver<VideoChannelEntry>,
 ) {
-    let (current_path, current_delete_original, current_privacy_status) = {
+    let (current_path, current_delete_original, current_privacy_status, current_active_account) = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
         (
             guard.clip_location.clone(),
             guard.delete_original,
             guard.privacy_status,
+            guard.active_account,
         )
     };
 
@@ -108,6 +115,9 @@ fn setup_channels(
 
     let (ps_tx, ps_rx) = tokio::sync::watch::channel(current_privacy_status);
     let ps_tx = Arc::new(ps_tx);
+
+    let (active_account_tx, active_account_rx) = tokio::sync::watch::channel(current_active_account);
+    let active_account_tx = Arc::new(active_account_tx);
 
     let (log_tx, log_rx) = tokio::sync::mpsc::channel::<LogEntry>(128);
 
@@ -137,6 +147,8 @@ fn setup_channels(
         del_tx,
         ps_rx,
         ps_tx,
+        active_account_rx,
+        active_account_tx,
         log_rx,
         video_tx,
         video_rx,
