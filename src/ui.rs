@@ -5,6 +5,31 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch::Sender;
 
+pub fn update_max_uploads_limit(ui: &AppWindow, storage: &AppStorage) -> i32 {
+    let has_second_acc = match &storage.token_cache_2 {
+        Some(s) if !s.trim().is_empty() && s.trim() != "[]" => true,
+        _ => false,
+    };
+
+    let is_main_selected = storage.active_account == 0;
+
+    let limit = if !has_second_acc || is_main_selected {
+        6
+    } else {
+        12
+    };
+
+    ui.set_max_uploads_limit(limit);
+
+    let mut current_val = ui.get_max_uploads_value();
+    if current_val > limit {
+        current_val = limit;
+        ui.set_max_uploads_value(limit);
+    }
+
+    current_val
+}
+
 pub fn setup_ui(
     storage: &Arc<Mutex<AppStorage>>,
     current_delete_original: bool,
@@ -302,20 +327,74 @@ pub fn setup_ui(
         guard.active_account
     };
 
+    let current_max_uploads = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.max_uploads_per_day
+    };
+    ui.set_max_uploads_value(current_max_uploads as i32);
+    let clamped_val = {
+        let guard = storage.lock().expect("Fehler");
+        update_max_uploads_limit(&ui, &guard)
+    };
+    if clamped_val as usize != current_max_uploads {
+        if let Ok(mut guard) = storage.lock() {
+            guard.max_uploads_per_day = clamped_val as usize;
+        }
+        save_storage(storage);
+    }
+
     let storage_clone_active_account = Arc::clone(storage);
     let active_account_tx_clone = active_account_tx.clone();
+    let ui_weak_active = ui_weak.clone();
     ui.on_active_account_change(move |index| {
         let active_idx = index as usize;
         let _ = active_account_tx_clone.send(active_idx);
         let storage_for_thread = Arc::clone(&storage_clone_active_account);
+        let ui_weak_for_thread = ui_weak_active.clone();
         std::thread::spawn(move || {
+            let mut current_max = 6;
+            let mut save_needed = false;
             if let Ok(mut guard) = storage_for_thread.lock() {
                 guard.active_account = active_idx;
+
+                let has_second_acc = match &guard.token_cache_2 {
+                    Some(s) if !s.trim().is_empty() && s.trim() != "[]" => true,
+                    _ => false,
+                };
+                let limit = if !has_second_acc || active_idx == 0 { 6 } else { 12 };
+                if guard.max_uploads_per_day > limit {
+                    guard.max_uploads_per_day = limit;
+                }
+                current_max = guard.max_uploads_per_day;
+                save_needed = true;
+            }
+            if save_needed {
+                save_storage(&storage_for_thread);
+            }
+
+            let storage_for_ui = Arc::clone(&storage_for_thread);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_for_thread.upgrade() {
+                    if let Ok(guard) = storage_for_ui.lock() {
+                        update_max_uploads_limit(&ui, &guard);
+                        ui.set_max_uploads_value(current_max as i32);
+                    }
+                }
+            });
+        });
+    });
+    ui.set_active_account_index(current_active_account as i32);
+
+    let storage_clone_max_uploads = Arc::clone(storage);
+    ui.on_max_uploads_changed(move |val| {
+        let storage_for_thread = Arc::clone(&storage_clone_max_uploads);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.max_uploads_per_day = val as usize;
             }
             save_storage(&storage_for_thread);
         });
     });
-    ui.set_active_account_index(current_active_account as i32);
 
     let ui_close_handle = ui_weak.clone();
     ui.window().on_close_requested(move || {

@@ -163,6 +163,16 @@ async fn get_youtube_client(
 
             save_tokens(storage, temp_path, active_account).await;
 
+            let ui_weak_limit = ui_weak.clone();
+            let storage_clone = Arc::clone(storage);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_limit.upgrade() {
+                    if let Ok(guard) = storage_clone.lock() {
+                        crate::ui::update_max_uploads_limit(&ui, &guard);
+                    }
+                }
+            });
+
             let connector = google_youtube3::hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .expect("Zertifikat fehlerhaft")
@@ -181,6 +191,19 @@ async fn get_youtube_client(
             error!("Fehler bei der Anmeldung im Browser: {:?}", e);
             None
         }
+    }
+}
+
+fn is_account_logged_in(storage: &Arc<Mutex<AppStorage>>, account_idx: usize) -> bool {
+    let guard = storage.lock().expect("Fehler");
+    let cache = if account_idx == 0 {
+        &guard.token_cache
+    } else {
+        &guard.token_cache_2
+    };
+    match cache {
+        Some(s) if !s.trim().is_empty() && s.trim() != "[]" => true,
+        _ => false,
     }
 }
 
@@ -246,6 +269,16 @@ async fn switch_account(
     }
 }
 
+fn update_next_check_ui(ui_weak: &slint::Weak<AppWindow>, next_check: chrono::DateTime<chrono::Local>) {
+    let text = format!("Nächste automatische Prüfung: {} Uhr", next_check.format("%H:%M"));
+    let ui_clone = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_clone.upgrade() {
+            ui.set_next_check_text(text.into());
+        }
+    });
+}
+
 pub async fn run_background_uploader(
     path_rx: &mut Receiver<Option<PathBuf>>,
     path_tx: Arc<Sender<Option<PathBuf>>>,
@@ -288,14 +321,25 @@ pub async fn run_background_uploader(
         tempfile::tempdir().expect("Fehler beim Erstellen des temporären Ordners");
     let temp_dir_path = temp_dir.path().to_path_buf();
 
-    let mut active_account = {
+    let selected_account = {
         let guard = storage.lock().expect("Fehler beim Lesen");
-        let sel = guard.active_account;
-        if sel == 2 {
-            determine_automatic_account(&storage)
+        guard.active_account
+    };
+
+    if selected_account == 2 && !is_account_logged_in(&storage, 1) {
+        info!("Automatisch-Modus aktiv, aber Zweitaccount ist noch nicht angemeldet. Starte Anmeldung für Zweitaccount...");
+        let temp_path_2 = temp_dir_path.join("tokens_2.json");
+        if let Some((_hub, _auth)) = get_youtube_client(&storage, &ui_weak, secret.clone(), &temp_path_2, 1).await {
+            info!("Zweitaccount erfolgreich angemeldet.");
         } else {
-            sel
+            error!("Anmeldung für Zweitaccount fehlgeschlagen.");
         }
+    }
+
+    let mut active_account = if selected_account == 2 {
+        determine_automatic_account(&storage)
+    } else {
+        selected_account
     };
 
     let mut temp_path = if active_account == 0 {
@@ -424,6 +468,8 @@ pub async fn run_background_uploader(
         false,
     )
     .await;
+    let next_check = chrono::Local::now() + chrono::Duration::hours(3);
+    update_next_check_ui(&ui_weak, next_check);
 
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(3 * 60 * 60));
     interval.tick().await;
@@ -454,6 +500,8 @@ pub async fn run_background_uploader(
                     &ui_weak,
                     true,
                 ).await;
+                let next_check = chrono::Local::now() + chrono::Duration::hours(3);
+                update_next_check_ui(&ui_weak, next_check);
             }
 
             res = del_rx.changed() => {
@@ -477,6 +525,17 @@ pub async fn run_background_uploader(
                     return;
                 }
                 let new_selected = *active_account_rx.borrow_and_update();
+
+                if new_selected == 2 && !is_account_logged_in(&storage, 1) {
+                    info!("Automatisch-Modus im UI ausgewählt, aber Zweitaccount ist noch nicht angemeldet. Starte Anmeldung für Zweitaccount...");
+                    let temp_path_2 = temp_dir_path.join("tokens_2.json");
+                    if let Some((_hub, _auth)) = get_youtube_client(&storage, &ui_weak, secret.clone(), &temp_path_2, 1).await {
+                        info!("Zweitaccount erfolgreich angemeldet.");
+                    } else {
+                        error!("Anmeldung für Zweitaccount fehlgeschlagen.");
+                    }
+                }
+
                 let new_account = if new_selected == 2 {
                     determine_automatic_account(&storage)
                 } else {
@@ -516,6 +575,8 @@ pub async fn run_background_uploader(
                             &ui_weak,
                             true,
                         ).await;
+                        let next_check = chrono::Local::now() + chrono::Duration::hours(3);
+                        update_next_check_ui(&ui_weak, next_check);
                     }
                 }
             }
@@ -538,6 +599,8 @@ pub async fn run_background_uploader(
                     &ui_weak,
                     false,
                 ).await;
+                let next_check = chrono::Local::now() + chrono::Duration::hours(3);
+                update_next_check_ui(&ui_weak, next_check);
             }
         }
     }
@@ -590,6 +653,17 @@ async fn perform_check_and_upload(
         guard.active_account
     };
 
+    let (uploads_today, uploads_today_2, max_limit) = {
+        let guard = storage.lock().expect("Fehler");
+        (guard.uploads_today, guard.uploads_today_2, guard.max_uploads_per_day)
+    };
+
+    let total_uploads_today = uploads_today + uploads_today_2;
+    if total_uploads_today >= max_limit {
+        info!("Tägliches Gesamtuploadlimit von {} erreicht. Warte auf nächsten Tag.", max_limit);
+        return;
+    }
+
     let mut check_limit = true;
     while check_limit {
         let current_uploads_today = {
@@ -618,12 +692,12 @@ async fn perform_check_and_upload(
         check_limit = false;
     }
 
-    let (uploads_today, last_upload) = {
+    let last_upload = {
         let guard = storage.lock().expect("Fehler");
         if *active_account == 0 {
-            (guard.uploads_today, guard.last_upload_date)
+            guard.last_upload_date
         } else {
-            (guard.uploads_today_2, guard.last_upload_date_2)
+            guard.last_upload_date_2
         }
     };
 
@@ -685,19 +759,45 @@ async fn perform_check_and_upload(
             pending_clips.len()
         );
 
-        let mut chunk_size = usize::max(1, pending_clips.len() / (6 - uploads_today));
+        let (uploads_today_curr, uploads_today_2_curr, max_limit_curr) = {
+            let guard = storage.lock().expect("Fehler");
+            (guard.uploads_today, guard.uploads_today_2, guard.max_uploads_per_day)
+        };
+        let total_uploads_today_curr = uploads_today_curr + uploads_today_2_curr;
+        let remaining_total_slots = if max_limit_curr > total_uploads_today_curr {
+            max_limit_curr - total_uploads_today_curr
+        } else {
+            0
+        };
+        let remaining_active_slots = if *active_account == 0 {
+            if uploads_today_curr < 6 { 6 - uploads_today_curr } else { 0 }
+        } else {
+            if uploads_today_2_curr < 6 { 6 - uploads_today_2_curr } else { 0 }
+        };
+        let remaining_slots = usize::min(remaining_total_slots, remaining_active_slots);
+        if remaining_slots == 0 {
+            info!("Keine verbleibenden Upload-Slots für heute.");
+            return;
+        }
+
+        let mut chunk_size = usize::max(1, pending_clips.len() / remaining_slots);
         if upload_all {
             chunk_size = pending_clips.len();
         }
         for clip_paket in pending_clips.chunks(chunk_size) {
-            let mut current_uploads_today = {
+            let (mut current_uploads_today, total_uploads, max_limit) = {
                 let guard = storage.lock().expect("Fehler");
-                if *active_account == 0 {
-                    guard.uploads_today
-                } else {
-                    guard.uploads_today_2
-                }
+                (
+                    if *active_account == 0 { guard.uploads_today } else { guard.uploads_today_2 },
+                    guard.uploads_today + guard.uploads_today_2,
+                    guard.max_uploads_per_day,
+                )
             };
+
+            if total_uploads >= max_limit {
+                info!("Tägliches Gesamtuploadlimit von {} erreicht. Breche Upload-Loop ab.", max_limit);
+                break;
+            }
 
             if current_uploads_today >= 6 {
                 if selected_account == 2 && *active_account == 0 {
@@ -790,7 +890,7 @@ async fn perform_check_and_upload(
             };
 
             let upload_result =
-                upload_video(video, final_processed_video.to_path_buf(), hub, video_file).await;
+                upload_video(video, final_processed_video.to_path_buf(), hub, video_file, ui_weak).await;
             match upload_result {
                 Ok(video) => {
                     handle_successful_upload(video, clip_paket, storage, del_rx, video_tx, auth, temp_path, *active_account).await;
@@ -810,6 +910,15 @@ async fn perform_check_and_upload(
                     if selected_account == 2 && *active_account == 0 {
                         info!("Wechsle automatisch zu Zweitaccount für einen erneuten Upload-Versuch (Modus: Automatisch).");
                         if switch_account(hub, auth, temp_path, active_account, secret, temp_dir_path, storage, ui_weak, 1).await {
+                            let (total_uploads, max_limit) = {
+                                let guard = storage.lock().expect("Fehler");
+                                (guard.uploads_today + guard.uploads_today_2, guard.max_uploads_per_day)
+                            };
+                            if total_uploads >= max_limit {
+                                info!("Gesamtuploadlimit erreicht vor Retry. Breche ab.");
+                                break;
+                            }
+
                             let retry_video_file = match tokio::fs::File::open(final_processed_video).await {
                                 Ok(file) => file,
                                 Err(e) => {
@@ -842,7 +951,7 @@ async fn perform_check_and_upload(
                                 ..Default::default()
                             };
 
-                            let retry_result = upload_video(video, final_processed_video.to_path_buf(), hub, retry_video_file).await;
+                            let retry_result = upload_video(video, final_processed_video.to_path_buf(), hub, retry_video_file, ui_weak).await;
                             if let Ok(video) = retry_result {
                                 handle_successful_upload(video, clip_paket, storage, del_rx, video_tx, auth, temp_path, *active_account).await;
                                 continue;
@@ -866,20 +975,42 @@ async fn upload_video(
     file_path: PathBuf,
     hub: &google_youtube3::YouTube<HttpsConnector<HttpConnector>>,
     video_file: tokio::fs::File,
+    ui_weak: &slint::Weak<AppWindow>,
 ) -> Result<google_youtube3::api::Video, UploadError> {
     info!(
         "Starte Upload von der Datei: {:?}:...",
         file_path.file_name()
     );
 
+    let ui_weak_clone = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_clone.upgrade() {
+            ui.set_is_uploading(true);
+            ui.set_upload_progress(0.0);
+        }
+    });
+
+    let mut delegate = UploadDelegate {
+        ui_weak: ui_weak.clone(),
+    };
+
     let result = hub
         .videos()
         .insert(video)
+        .delegate(&mut delegate)
         .upload(
             video_file.into_std().await,
             "video/*".parse().expect("Fehler beim Video Upload"),
         )
         .await;
+
+    let ui_weak_clone2 = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_clone2.upgrade() {
+            ui.set_is_uploading(false);
+            ui.set_upload_progress(0.0);
+        }
+    });
 
     match result {
         Ok((_response, video)) => {
@@ -1012,4 +1143,31 @@ async fn handle_successful_upload(
         storage_a.upload_all = false;
     };
     save_storage(storage);
+}
+
+struct UploadDelegate {
+    ui_weak: slint::Weak<AppWindow>,
+}
+
+impl google_youtube3::Delegate for UploadDelegate {
+    fn cancel_chunk_upload(&mut self, chunk: &google_youtube3::common::ContentRange) -> bool {
+        if let Some(range) = &chunk.range {
+            let total = chunk.total_length as f32;
+            if total > 0.0 {
+                let uploaded = (range.first) as f32;
+                let percent = (uploaded / total) * 100.0;
+                let ui_weak = self.ui_weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_upload_progress(percent);
+                    }
+                });
+            }
+        }
+        false
+    }
+
+    fn chunk_size(&mut self) -> u64 {
+        1 << 18 // 256 KB
+    }
 }

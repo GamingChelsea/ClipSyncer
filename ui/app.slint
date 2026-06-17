@@ -23,6 +23,9 @@ import { LucidePaths } from "slintcn/components/lucide-paths.slint";
 import { AspectRatio } from "slintcn/components/aspect-ratio.slint";
 import { TooltipContainer } from "slintcn/components/tooltip.slint";
 import { AlertDialog } from "slintcn/components/alert-dialog.slint";
+import { IntSlider } from "slintcn/components/int-slider.slint";
+import { Progress } from "slintcn/components/progress.slint";
+import { Tokens } from "slintcn/theme/tokens.slint";
 
 import "./fonts/GoogleSans.ttf";
 
@@ -105,6 +108,12 @@ export component AppWindow inherits Window {
     in-out property <string> login_url: "";
     in-out property <int> active_account_index: 0;
     callback active_account_change(int);
+    in-out property <int> max_uploads_value: 6;
+    in-out property <int> max_uploads_limit: 6;
+    callback max_uploads_changed(int);
+    in-out property <float> upload_progress: 0.0;
+    in-out property <bool> is_uploading: false;
+    in-out property <string> next_check_text: "";
 
     Main := ScrollView {
         VerticalLayout {
@@ -133,6 +142,50 @@ export component AppWindow inherits Window {
             }
 
             Separator { }
+
+            if (root.next-check-text != "" || root.is-uploading): Card {
+                variant: CardVariant.raised;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 12px;
+
+                    if (root.next-check-text != ""): HorizontalLayout {
+                        alignment: center;
+                        spacing: 8px;
+                        Icon {
+                            commands: LucidePaths.clock;
+                            size: 16px;
+                            tint: Tokens.color-foreground;
+                        }
+                        Typography {
+                            text: root.next-check-text;
+                            variant: TextVariant.body;
+                            tone: TextTone.muted;
+                        }
+                    }
+
+                    if (root.is-uploading): VerticalLayout {
+                        spacing: 8px;
+                        HorizontalLayout {
+                            alignment: space-between;
+                            Typography {
+                                text: "Upload-Fortschritt...";
+                                variant: TextVariant.body-sm;
+                                tone: TextTone.muted;
+                            }
+                            Typography {
+                                text: round(root.upload-progress) + "%";
+                                variant: TextVariant.body-sm;
+                                font-weight: 600;
+                                color: Tokens.color-primary;
+                            }
+                        }
+                        Progress {
+                            value: root.upload-progress;
+                        }
+                    }
+                }
+            }
 
             Card {
                 variant: CardVariant.raised;
@@ -326,6 +379,21 @@ export component AppWindow inherits Window {
                                 ];
                                 selected-index <=> active_account_index;
                                 changed(i) => { active_account_change(i) }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Max. Uploads/Tag: " + max_uploads_value;
+                            description-text: "Tägliches Limit (1 bis " + max_uploads_limit + ")";
+
+                            IntSlider {
+                                minimum: 1;
+                                maximum: max_uploads_limit;
+                                value <=> max_uploads_value;
+                                changed(v) => { max_uploads_changed(v); }
+                                width: 120px;
                             }
                         }
 

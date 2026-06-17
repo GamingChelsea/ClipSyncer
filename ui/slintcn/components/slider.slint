@@ -1,0 +1,109 @@
+import { Tokens } from "../theme/tokens.slint";
+import { FocusRing } from "focus-ring.slint";
+
+// Horizontal slider. Drag the thumb or click the track. `value` is in-out.
+export component Slider inherits Rectangle {
+    // Two-way; current value clamped to `minimum..maximum`.
+    in-out property <float> value: 0;
+    // Lower bound (inclusive).
+    in property <float> minimum: 0;
+    // Upper bound (inclusive).
+    in property <float> maximum: 100;
+    // When true, the thumb dims and stops responding.
+    in property <bool> disabled: false;
+    // Fired with the new `value` while dragging.
+    callback changed(float);
+
+    property <bool> pointer-focus: false;
+
+    height: 20px;            // hit area
+    horizontal-stretch: 1;
+    opacity: root.disabled ? 0.5 : 1.0;
+
+    property <float> ratio:
+        (root.maximum - root.minimum) > 0
+            ? (root.value - root.minimum) / (root.maximum - root.minimum)
+            : 0;
+
+    function set-from-x(px: length) {
+        if (root.disabled) { return; }
+        root.value = root.minimum
+            + max(0, min(1, px / root.width)) * (root.maximum - root.minimum);
+        root.changed(root.value);
+    }
+
+    // Track
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 6px;
+        width: parent.width;
+        background: Tokens.color-muted;
+        border-radius: 3px;
+
+        Rectangle {
+            x: 0;
+            y: 0;
+            width: parent.width * root.ratio;
+            height: parent.height;
+            background: Tokens.color-primary;
+            border-radius: 3px;
+        }
+    }
+
+    // Thumb
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        x: (parent.width - self.width) * root.ratio;
+        y: (parent.height - self.height) / 2;
+        background: Tokens.color-background;
+        border-width: 2px;
+        border-color: Tokens.color-primary;
+        border-radius: 8px;
+
+        if focus-scope.has-focus && !root.pointer-focus : FocusRing {
+            host-width: parent.width;
+            host-height: parent.height;
+            offset: 2px;
+            ring-width: 2px;
+            radius: 10px;
+            ring-color: Tokens.color-ring-muted;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: root.disabled ? default : pointer;
+        pointer-event(ev) => {
+            if (!root.disabled
+                    && ev.button == PointerEventButton.left
+                    && ev.kind == PointerEventKind.down) {
+                root.pointer-focus = true;
+            }
+        }
+        clicked => { root.set-from-x(self.mouse-x); focus-scope.focus(); }
+        moved => { if (self.pressed) { root.set-from-x(self.mouse-x); } }
+    }
+
+    forward-focus: focus-scope;
+    focus-scope := FocusScope {
+        // Zero-size so the scope cannot intercept the first pointer press
+        // (default FocusScope fills its parent and swallows that click).
+        width: 0px;
+        height: 0px;
+        enabled: !root.disabled;
+        key-pressed(event) => {
+            root.pointer-focus = false;
+            if (event.text == Key.LeftArrow) {
+                root.value = max(root.minimum, root.value - 1);
+                root.changed(root.value);
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.value = min(root.maximum, root.value + 1);
+                root.changed(root.value);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}

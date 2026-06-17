@@ -119,5 +119,17 @@
     "files": {
       "ui/slintcn/components/alert-dialog.slint": "04996d381e4910edd4b08e1d406a0cdb3d65b52ab10ffab556b8f5f22a001d8f"
     }
+  },
+  "slider": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/slider.slint": "c61614c573af03f63ea806a78dbdca4d1a1ab10735acb43bcfceb57916090657"
+    }
+  },
+  "progress": {
+    "version": "0.35.0",
+    "files": {
+      "ui/slintcn/components/progress.slint": "2e61e8cbbdbd60834eabce478b22e90c0b905feefe40b75c89ce0989ad9fe09c"
+    }
   }
 }

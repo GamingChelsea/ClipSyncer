@@ -132,6 +132,7 @@ pub struct AppStorage {
     pub uploads_today_2: usize,
     pub last_upload_date_2: chrono::DateTime<chrono::Local>,
     pub active_account: usize,
+    pub max_uploads_per_day: usize,
 }
 
 impl Default for AppStorage {
@@ -152,6 +153,7 @@ impl Default for AppStorage {
             uploads_today_2: 0,
             last_upload_date_2: chrono::Local::now() - chrono::Duration::hours(4),
             active_account: 0,
+            max_uploads_per_day: 6,
         }
     }
 }
