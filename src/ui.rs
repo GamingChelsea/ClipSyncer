@@ -33,9 +33,11 @@ pub fn update_max_uploads_limit(ui: &AppWindow, storage: &AppStorage) -> i32 {
 pub fn setup_ui(
     storage: &Arc<Mutex<AppStorage>>,
     current_delete_original: bool,
+    current_notify: bool,
     current_privacy_status: PrivacyStatus,
     path_tx: &Arc<Sender<Option<PathBuf>>>,
     del_tx: Arc<Sender<bool>>,
+    not_tx: Arc<Sender<bool>>,
     ps_tx: Arc<Sender<PrivacyStatus>>,
     active_account_tx: Arc<Sender<usize>>,
     mut log_rx: tokio::sync::mpsc::Receiver<LogEntry>,
@@ -173,9 +175,11 @@ pub fn setup_ui(
                             if let Ok(img) = image::load_from_memory(bytes) {
                                 let rgba = img.to_rgba8();
                                 let (w, h) = rgba.dimensions();
-                                slint::Image::from_rgba8(
-                                    SharedPixelBuffer::clone_from_slice(rgba.as_raw(), w, h),
-                                )
+                                slint::Image::from_rgba8(SharedPixelBuffer::clone_from_slice(
+                                    rgba.as_raw(),
+                                    w,
+                                    h,
+                                ))
                             } else {
                                 slint::Image::default()
                             }
@@ -243,13 +247,19 @@ pub fn setup_ui(
                                 let mut current_video: Vec<VideoEntry> =
                                     ui.get_videos().iter().collect();
 
-                                if let Some(item) = current_video.iter_mut().find(|v| v.link == link) {
+                                if let Some(item) =
+                                    current_video.iter_mut().find(|v| v.link == link)
+                                {
                                     if let Ok(img) = image::load_from_memory(&bytes) {
                                         let rgba = img.to_rgba8();
                                         let (w, h) = rgba.dimensions();
 
                                         item.thumbnail = slint::Image::from_rgba8(
-                                            SharedPixelBuffer::clone_from_slice(rgba.as_raw(), w, h),
+                                            SharedPixelBuffer::clone_from_slice(
+                                                rgba.as_raw(),
+                                                w,
+                                                h,
+                                            ),
                                         );
 
                                         let model =
@@ -265,6 +275,20 @@ pub fn setup_ui(
         }
     });
 
+    let storage_clone_notify_original = Arc::clone(storage);
+    let not_tx_clone = not_tx.clone();
+    ui.on_notify_changed(move |new_value| {
+        let _ = not_tx_clone.send(new_value);
+        let storage_for_thread = Arc::clone(&storage_clone_notify_original);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.notify = new_value;
+            }
+            save_storage(&storage_for_thread);
+        });
+    });
+    ui.set_delete_original(current_notify);
+
     let storage_clone_delete_original = Arc::clone(storage);
     let del_tx_clone = del_tx.clone();
     ui.on_delete_original_changed(move |new_value| {
@@ -272,7 +296,7 @@ pub fn setup_ui(
         let storage_for_thread = Arc::clone(&storage_clone_delete_original);
         std::thread::spawn(move || {
             if let Ok(mut guard) = storage_for_thread.lock() {
-                guard.delete_original = new_value;
+                guard.notify = new_value;
             }
             save_storage(&storage_for_thread);
         });
@@ -361,7 +385,11 @@ pub fn setup_ui(
                     Some(s) if !s.trim().is_empty() && s.trim() != "[]" => true,
                     _ => false,
                 };
-                let limit = if !has_second_acc || active_idx == 0 { 6 } else { 12 };
+                let limit = if !has_second_acc || active_idx == 0 {
+                    6
+                } else {
+                    12
+                };
                 if guard.max_uploads_per_day > limit {
                     guard.max_uploads_per_day = limit;
                 }

@@ -121,6 +121,7 @@ pub struct AppStorage {
     #[serde(deserialize_with = "deserialize_uploaded_videos")]
     pub uploaded_videos: Vec<CachedVideo>,
     pub delete_original: bool,
+    pub notify: bool,
     pub upload_all: bool,
     pub privacy_status: PrivacyStatus,
     pub last_upload_date: chrono::DateTime<chrono::Local>,
@@ -142,6 +143,7 @@ impl Default for AppStorage {
             uploaded_files: vec![],
             uploaded_videos: vec![],
             delete_original: false,
+            notify: false,
             upload_all: false,
             privacy_status: PrivacyStatus::Unlisted,
             last_upload_date: chrono::Local::now() - chrono::Duration::hours(4),
@@ -170,20 +172,23 @@ pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
 pub fn load_storage() -> Arc<Mutex<AppStorage>> {
     let ron_content = std::fs::read_to_string("config.ron");
     let output = match ron_content {
-        Ok(content) => {
-            match ron::from_str(&content) {
-                Ok(parsed) => parsed,
-                Err(e) => {
-                    tracing::error!("Fehler beim Parsen der config.ron: {:?}", e);
-                    if let Err(err) = std::fs::copy("config.ron", "config.ron.bak") {
-                        tracing::error!("Fehler beim Erstellen des Backups config.ron.bak: {:?}", err);
-                    } else {
-                        tracing::info!("Backup der fehlerhaften Config gespeichert unter config.ron.bak");
-                    }
-                    AppStorage::default()
+        Ok(content) => match ron::from_str(&content) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::error!("Fehler beim Parsen der config.ron: {:?}", e);
+                if let Err(err) = std::fs::copy("config.ron", "config.ron.bak") {
+                    tracing::error!(
+                        "Fehler beim Erstellen des Backups config.ron.bak: {:?}",
+                        err
+                    );
+                } else {
+                    tracing::info!(
+                        "Backup der fehlerhaften Config gespeichert unter config.ron.bak"
+                    );
                 }
+                AppStorage::default()
             }
-        }
+        },
         _ => AppStorage::default(),
     };
     Arc::new(Mutex::new(output))

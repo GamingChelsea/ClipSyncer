@@ -96,6 +96,8 @@ export component AppWindow inherits Window {
     in property <string> status_text: "Wartet auf Videos...";
     callback delete_original_changed(bool);
     in-out property <bool> delete_original: false;
+    callback notify_changed(bool);
+    in-out property <bool> notify: false;
     in-out property <int> visibility_selection_index;
     callback privacy_change(int);
     in-out property <int> encoder_selection_index;
@@ -157,6 +159,7 @@ export component AppWindow inherits Window {
                             size: 16px;
                             tint: Tokens.color-foreground;
                         }
+
                         Typography {
                             text: root.next-check-text;
                             variant: TextVariant.body;
@@ -173,6 +176,7 @@ export component AppWindow inherits Window {
                                 variant: TextVariant.body-sm;
                                 tone: TextTone.muted;
                             }
+
                             Typography {
                                 text: round(root.upload-progress) + "%";
                                 variant: TextVariant.body-sm;
@@ -180,6 +184,7 @@ export component AppWindow inherits Window {
                                 color: Tokens.color-primary;
                             }
                         }
+
                         Progress {
                             value: root.upload-progress;
                         }
@@ -394,6 +399,20 @@ export component AppWindow inherits Window {
                                 value <=> max_uploads_value;
                                 changed(v) => { max_uploads_changed(v); }
                                 width: 120px;
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: "Benachrichtigungen:";
+                            description-text: "Willst du über den erfolgreichen Upload benachrichtigt werden?";
+
+                            Switch {
+                                checked <=> notify;
+                                toggled => {
+                                    root.notify_changed(root.notify);
+                                }
                             }
                         }
 

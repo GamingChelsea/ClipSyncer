@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch::{Receiver, Sender};
@@ -30,11 +32,14 @@ fn main() {
 
     let (
         current_delete_original,
+        current_notify,
         current_privacy_status,
         mut path_rx,
         path_tx,
         del_rx,
         del_tx,
+        not_rx,
+        not_tx,
         ps_rx,
         ps_tx,
         active_account_rx,
@@ -52,9 +57,11 @@ fn main() {
     let (ui, ui_weak, _tray) = setup_ui(
         &storage,
         current_delete_original,
+        current_notify,
         current_privacy_status,
         &path_tx,
         del_tx,
+        not_tx,
         ps_tx,
         active_account_tx,
         log_rx,
@@ -67,6 +74,7 @@ fn main() {
             &mut path_rx,
             path_tx,
             del_rx,
+            not_rx,
             ps_rx,
             active_account_rx,
             video_tx,
@@ -84,9 +92,12 @@ fn setup_channels(
     storage: &Arc<Mutex<AppStorage>>,
 ) -> (
     bool,
+    bool,
     PrivacyStatus,
     Receiver<Option<PathBuf>>,
     Arc<Sender<Option<PathBuf>>>,
+    Receiver<bool>,
+    Arc<Sender<bool>>,
     Receiver<bool>,
     Arc<Sender<bool>>,
     Receiver<PrivacyStatus>,
@@ -97,11 +108,18 @@ fn setup_channels(
     Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     tokio::sync::mpsc::Receiver<VideoChannelEntry>,
 ) {
-    let (current_path, current_delete_original, current_privacy_status, current_active_account) = {
+    let (
+        current_path,
+        current_delete_original,
+        current_notify,
+        current_privacy_status,
+        current_active_account,
+    ) = {
         let guard = storage.lock().expect("Fehler beim Lesen vom Storage");
         (
             guard.clip_location.clone(),
             guard.delete_original,
+            guard.notify,
             guard.privacy_status,
             guard.active_account,
         )
@@ -113,10 +131,14 @@ fn setup_channels(
     let (del_tx, del_rx) = tokio::sync::watch::channel(current_delete_original);
     let del_tx = Arc::new(del_tx);
 
+    let (not_tx, not_rx) = tokio::sync::watch::channel(current_notify);
+    let not_tx = Arc::new(not_tx);
+
     let (ps_tx, ps_rx) = tokio::sync::watch::channel(current_privacy_status);
     let ps_tx = Arc::new(ps_tx);
 
-    let (active_account_tx, active_account_rx) = tokio::sync::watch::channel(current_active_account);
+    let (active_account_tx, active_account_rx) =
+        tokio::sync::watch::channel(current_active_account);
     let active_account_tx = Arc::new(active_account_tx);
 
     let (log_tx, log_rx) = tokio::sync::mpsc::channel::<LogEntry>(128);
@@ -138,13 +160,17 @@ fn setup_channels(
     let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoChannelEntry>(100);
     let video_tx = Arc::new(video_tx);
 
+    let current_notify = false;
     (
         current_delete_original,
+        current_notify,
         current_privacy_status,
         path_rx,
         path_tx,
         del_rx,
         del_tx,
+        not_rx,
+        not_tx,
         ps_rx,
         ps_tx,
         active_account_rx,
