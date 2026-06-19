@@ -134,6 +134,7 @@ pub struct AppStorage {
     pub last_upload_date_2: chrono::DateTime<chrono::Local>,
     pub active_account: usize,
     pub max_uploads_per_day: usize,
+    pub language: String,
 }
 
 impl Default for AppStorage {
@@ -156,6 +157,7 @@ impl Default for AppStorage {
             last_upload_date_2: chrono::Local::now() - chrono::Duration::hours(4),
             active_account: 0,
             max_uploads_per_day: 6,
+            language: "en".to_string(),
         }
     }
 }
@@ -193,3 +195,13 @@ pub fn load_storage() -> Arc<Mutex<AppStorage>> {
     };
     Arc::new(Mutex::new(output))
 }
+
+pub fn is_ffmpeg_available() -> bool {
+    ffmpeg_sidecar::command::ffmpeg_is_installed()
+}
+
+pub fn download_ffmpeg_local() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ffmpeg_sidecar::download::auto_download()?;
+    Ok(())
+}
+

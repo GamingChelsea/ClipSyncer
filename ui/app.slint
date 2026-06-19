@@ -42,6 +42,42 @@ export struct VideoEntry {
     thumbnail: image,
 }
 
+export struct I18nStrings {
+    uploaded_videos_title: string,
+    settings_title: string,
+    now_upload_title: string,
+    now_upload_desc: string,
+    btn_upload: string,
+    import_config_title: string,
+    import_config_desc: string,
+    btn_import: string,
+    path_title: string,
+    btn_select: string,
+    ffmpeg_title: string,
+    ffmpeg_desc: string,
+    visibility_title: string,
+    visibility_desc: string,
+    active_account_title: string,
+    active_account_desc: string,
+    max_uploads_title: string,
+    max_uploads_desc: string,
+    notifications_title: string,
+    notifications_desc: string,
+    deletion_title: string,
+    deletion_desc: string,
+    log_viewer_title: string,
+    google_login_title: string,
+    google_login_desc: string,
+    google_login_manual: string,
+    btn_open_browser: string,
+    generating_login_link: string,
+    ffmpeg_setup_title: string,
+    status_waiting: string,
+    google_api_setup_title: string,
+    google_api_setup_desc: string,
+    btn_select_file: string,
+}
+
 component SettingsEntry inherits Rectangle {
     in property <string> description-text;
     in property <string> title-text;
@@ -89,6 +125,7 @@ export component AppWindow inherits Window {
 
     default-font-family: "Google Sans";
 
+    in property <I18nStrings> i18n;
     in property <[LogEntry]> logs: [];
     in property <[VideoEntry]> videos: [];
     callback open_save_dialog();
@@ -116,6 +153,7 @@ export component AppWindow inherits Window {
     in-out property <float> upload_progress: 0.0;
     in-out property <bool> is_uploading: false;
     in-out property <string> next_check_text: "";
+    callback import_config();
 
     Main := ScrollView {
         VerticalLayout {
@@ -136,7 +174,7 @@ export component AppWindow inherits Window {
                 }
 
                 Typography {
-                    text: "Synchronisiert Clips aus dem Ordner und lädt sie hoch";
+                    text: root.status-text;
                     variant: TextVariant.body-lg;
                     horizontal-alignment: center;
                     tone: TextTone.muted;
@@ -200,7 +238,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
 
                     Collapsible {
-                        title: "Hochgeladene Videos";
+                        title: root.i18n.uploaded_videos_title;
                         clip: true;
 
                         ListView {
@@ -305,18 +343,18 @@ export component AppWindow inherits Window {
                     Separator { }
 
                     Collapsible {
-                        title: "Einstellungen";
+                        title: root.i18n.settings_title;
                         clip: true;
 
                         SettingsEntry {
-                            title-text: "Jetzt hochladen:";
-                            description-text: "Warnung: Upload Limit kann überschritten werden";
+                            title-text: root.i18n.now_upload_title;
+                            description-text: root.i18n.now_upload_desc;
 
                             Button {
                                 clicked => {
                                     upload_now();
                                 }
-                                text: "Hochladen";
+                                text: root.i18n.btn_upload;
                                 variant: ButtonVariant.destructive;
                             }
                         }
@@ -324,12 +362,27 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Pfad:";
+                            title-text: root.i18n.import_config_title;
+                            description-text: root.i18n.import_config_desc;
+
+                            Button {
+                                clicked => {
+                                    root.import_config();
+                                }
+                                text: root.i18n.btn_import;
+                                variant: ButtonVariant.default;
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: root.i18n.path_title;
                             description-text <=> selected_path;
 
                             Button {
                                 size: ButtonSize.sm;
-                                text: "Auswählen...";
+                                text: root.i18n.btn_select;
                                 clicked => { root.open_save_dialog(); }
                             }
                         }
@@ -337,8 +390,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "FFmpeg:";
-                            description-text: "Hardware Beschleunigung von FFmpeg";
+                            title-text: root.i18n.ffmpeg_title;
+                            description-text: root.i18n.ffmpeg_desc;
 
                             Select {
                                 items: [
@@ -356,8 +409,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Sichtbarkeit:";
-                            description-text: "Sichtbarkeit des Clips auf YouTube";
+                            title-text: root.i18n.visibility_title;
+                            description-text: root.i18n.visibility_desc;
 
                             Select {
                                 items: [
@@ -373,8 +426,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Aktiver Account:";
-                            description-text: "Aktuell genutzter Google-Account";
+                            title-text: root.i18n.active_account_title;
+                            description-text: root.i18n.active_account_desc;
 
                             Select {
                                 items: [
@@ -390,8 +443,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Max. Uploads/Tag: " + max_uploads_value;
-                            description-text: "Tägliches Limit (1 bis " + max_uploads_limit + ")";
+                            title-text: root.i18n.max_uploads_title + " " + max_uploads_value;
+                            description-text: root.i18n.max_uploads_desc + " (1 bis " + max_uploads_limit + ")";
 
                             IntSlider {
                                 minimum: 1;
@@ -405,8 +458,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Benachrichtigungen:";
-                            description-text: "Willst du über den erfolgreichen Upload benachrichtigt werden?";
+                            title-text: root.i18n.notifications_title;
+                            description-text: root.i18n.notifications_desc;
 
                             Switch {
                                 checked <=> notify;
@@ -419,8 +472,8 @@ export component AppWindow inherits Window {
                         Separator { }
 
                         SettingsEntry {
-                            title-text: "Löschung:";
-                            description-text: "Lokale Originale löschen nach dem Upload?";
+                            title-text: root.i18n.deletion_title;
+                            description-text: root.i18n.deletion_desc;
 
                             Switch {
                                 checked <=> delete_original;
@@ -434,7 +487,7 @@ export component AppWindow inherits Window {
                     Separator { }
 
                     Collapsible {
-                        title: "Log Viewer";
+                        title: root.i18n.log_viewer_title;
                         clip: true;
 
                         ListView {
@@ -505,9 +558,9 @@ export component AppWindow inherits Window {
         width: parent.width;
         height: parent.height;
         open: needs_client_secret;
-        title: "Google API Setup";
-        description: "Um auf YouTube hochzuladen, wird eine 'client_secret.json' benötigt:\n\n1. Gehe zu console.cloud.google.com und erstelle ein Projekt.\n2. Aktiviere dort die 'YouTube Data API v3'.\n3. Erstelle unter Anmeldedaten eine 'OAuth-Client-ID' (Typ: Desktop-App).\n4. Lade die JSON-Datei herunter und wähle sie hier aus.";
-        cancel-label: "Datei auswählen";
+        title: root.i18n.google_api_setup_title;
+        description: root.i18n.google_api_setup_desc;
+        cancel-label: root.i18n.btn_select_file;
         cancelled => {
             select_client_secret();
         }
@@ -531,14 +584,14 @@ export component AppWindow inherits Window {
                 spacing: 16px;
 
                 Typography {
-                    text: "Google Anmeldung";
+                    text: root.i18n.google_login_title;
                     font-size: 20px;
                     font-weight: 700;
                     color: #ffffff;
                 }
 
                 Typography {
-                    text: "Um Videos auf YouTube hochzuladen, ist eine Anmeldung bei Google erforderlich. Es öffnet sich gleich ein Browser-Fenster.";
+                    text: root.i18n.google_login_desc;
                     variant: TextVariant.body;
                     tone: TextTone.muted;
                     wrap: word-wrap;
@@ -548,7 +601,7 @@ export component AppWindow inherits Window {
                     spacing: 12px;
 
                     Typography {
-                        text: "Falls sich das Fenster nicht automatisch geöffnet hat, kannst du den Link kopieren oder manuell öffnen:";
+                        text: root.i18n.google_login_manual;
                         variant: TextVariant.body-sm;
                         tone: TextTone.muted;
                         wrap: word-wrap;
@@ -565,7 +618,7 @@ export component AppWindow inherits Window {
                         alignment: end;
 
                         Button {
-                            text: "Im Browser öffnen";
+                            text: root.i18n.btn_open_browser;
                             variant: ButtonVariant.default;
                             clicked => {
                                 link_clicked(login_url);
@@ -579,7 +632,7 @@ export component AppWindow inherits Window {
                     spacing: 8px;
 
                     Typography {
-                        text: "Generiere Anmelde-Link...";
+                        text: root.i18n.generating_login_link;
                         variant: TextVariant.body;
                         tone: TextTone.muted;
                     }

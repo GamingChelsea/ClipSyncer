@@ -49,6 +49,14 @@ pub fn setup_ui(
     let ui = AppWindow::new().expect("Fehler beim erstellen vom UI");
     let ui_weak = ui.as_weak();
 
+    let language = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.language.clone()
+    };
+    let i18n_strings = crate::i18n::get_i18n_strings(&language);
+    ui.set_i18n(i18n_strings.clone());
+    ui.set_status_text(i18n_strings.status_waiting);
+
     let has_token = {
         let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
         guard.token_cache.is_some()
@@ -421,6 +429,112 @@ pub fn setup_ui(
                 guard.max_uploads_per_day = val as usize;
             }
             save_storage(&storage_for_thread);
+        });
+    });
+
+    let storage_clone_import = Arc::clone(storage);
+    let ui_weak_import = ui_weak.clone();
+    let path_tx_import = path_tx.clone();
+    let del_tx_import = del_tx.clone();
+    let not_tx_import = not_tx.clone();
+    let ps_tx_import = ps_tx.clone();
+    let active_account_tx_import = active_account_tx.clone();
+    let video_tx_import = video_tx.clone();
+
+    ui.on_import_config(move || {
+        let storage_for_thread = Arc::clone(&storage_clone_import);
+        let ui_weak_for_thread = ui_weak_import.clone();
+        let path_tx_for_thread = path_tx_import.clone();
+        let del_tx_for_thread = del_tx_import.clone();
+        let not_tx_for_thread = not_tx_import.clone();
+        let ps_tx_for_thread = ps_tx_import.clone();
+        let active_account_tx_for_thread = active_account_tx_import.clone();
+        let video_tx_for_thread = video_tx_import.clone();
+
+        std::thread::spawn(move || {
+            let result = rfd::FileDialog::new()
+                .set_title("Wähle deine config.ron aus")
+                .add_filter("RON Config", &["ron"])
+                .pick_file();
+
+            if let Some(file_path) = result {
+                let ron_content = match std::fs::read_to_string(&file_path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("Fehler beim Lesen der ausgewählten Datei: {:?}", e);
+                        return;
+                    }
+                };
+
+                let new_storage: AppStorage = match ron::from_str(&ron_content) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        tracing::error!("Fehler beim Parsen der importierten Config: {:?}", e);
+                        return;
+                    }
+                };
+
+                {
+                    if let Ok(mut guard) = storage_for_thread.lock() {
+                        *guard = new_storage;
+                    }
+                }
+
+                save_storage(&storage_for_thread);
+
+                let (clip_loc, del_orig, notify_val, privacy, active_acc, max_uploads, encoder_idx, has_token, needs_secret, uploaded_videos, language) = {
+                    let guard = storage_for_thread.lock().unwrap();
+                    (
+                        guard.clip_location.clone(),
+                        guard.delete_original,
+                        guard.notify,
+                        guard.privacy_status,
+                        guard.active_account,
+                        guard.max_uploads_per_day,
+                        guard.video_encoder,
+                        guard.token_cache.is_some(),
+                        guard.client_secret.is_none(),
+                        guard.uploaded_videos.clone(),
+                        guard.language.clone(),
+                    )
+                };
+
+                let _ = path_tx_for_thread.send_replace(clip_loc.clone());
+                let _ = del_tx_for_thread.send(del_orig);
+                let _ = not_tx_for_thread.send(notify_val);
+                let _ = ps_tx_for_thread.send(privacy);
+                let _ = active_account_tx_for_thread.send(active_acc);
+
+                for video in uploaded_videos.iter() {
+                    let video_entry = VideoChannelEntry {
+                        title: video.title.clone(),
+                        link: video.link.clone(),
+                        visibility: video.visibility.clone(),
+                        thumbnail_url: video.thumbnail_url.clone(),
+                        thumbnail_bytes: video.thumbnail_bytes.clone(),
+                    };
+                    let _ = video_tx_for_thread.try_send(video_entry);
+                }
+
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_for_thread.upgrade() {
+                        let path_str = clip_loc.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                        ui.set_selected_path(path_str.into());
+                        ui.set_delete_original(del_orig);
+                        ui.set_notify(notify_val);
+                        ui.set_visibility_selection_index(privacy as usize as i32);
+                        ui.set_encoder_selection_index(encoder_idx as usize as i32);
+                        ui.set_active_account_index(active_acc as i32);
+                        ui.set_max_uploads_value(max_uploads as i32);
+                        ui.set_logged_in(has_token);
+                        ui.set_needs_client_secret(needs_secret);
+
+                        let i18n_strings = crate::i18n::get_i18n_strings(&language);
+                        ui.set_i18n(i18n_strings.clone());
+                        ui.set_status_text(i18n_strings.status_waiting);
+                    }
+                });
+            }
         });
     });
 

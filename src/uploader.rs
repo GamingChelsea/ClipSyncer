@@ -304,10 +304,6 @@ pub async fn run_background_uploader(
     storage: Arc<Mutex<AppStorage>>,
     ui_weak: slint::Weak<AppWindow>,
 ) {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Fehler bei der Initialisierung von rustls");
-
     let mut secret_opt;
 
     loop {

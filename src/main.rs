@@ -21,6 +21,7 @@ mod storage;
 mod ui;
 mod uploader;
 mod video;
+mod i18n;
 
 use logger::SlintLayer;
 use storage::{AppStorage, PrivacyStatus, load_storage};
@@ -28,6 +29,7 @@ use ui::setup_ui;
 use uploader::run_background_uploader;
 
 fn main() {
+    rustls::crypto::ring::default_provider().install_default().expect("Failed to install TLS provider");
     let storage = load_storage();
 
     let (
@@ -69,6 +71,8 @@ fn main() {
         video_rx,
     );
 
+    let ui_weak_uploader = ui_weak.clone();
+    let storage_uploader = Arc::clone(&storage);
     rt.spawn(async move {
         run_background_uploader(
             &mut path_rx,
@@ -78,13 +82,56 @@ fn main() {
             ps_rx,
             active_account_rx,
             video_tx,
-            storage,
-            ui_weak,
+            storage_uploader,
+            ui_weak_uploader,
         )
         .await;
     });
 
     ui.show().expect("Fehler das Fenster anzuzeigen");
+
+    let is_available = storage::is_ffmpeg_available();
+    if !is_available {
+        let language = {
+            let guard = storage.lock().expect("Fehler beim Lesen");
+            guard.language.clone()
+        };
+        let msg = if language.to_lowercase() == "de" {
+            "FFmpeg wird heruntergeladen... Bitte warten."
+        } else {
+            "Downloading FFmpeg... Please wait."
+        };
+        ui.set_status_text(msg.into());
+        let ui_weak_download = ui_weak.clone();
+        let lang_clone = language.clone();
+        std::thread::spawn(move || {
+            match storage::download_ffmpeg_local() {
+                Ok(_) => {
+                    info!("FFmpeg erfolgreich heruntergeladen");
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak_download.upgrade() {
+                            let language = ui.get_i18n();
+                            ui.set_status_text(language.status_waiting);
+                        }
+                    });
+                }
+                Err(e) => {
+                    tracing::error!("Fehler beim Download von FFmpeg: {:?}", e);
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak_download.upgrade() {
+                            let err_msg = if lang_clone.to_lowercase() == "de" {
+                                format!("Download-Fehler: {}. Bitte App neu starten.", e)
+                            } else {
+                                format!("Download error: {}. Please restart the app.", e)
+                            };
+                            ui.set_status_text(err_msg.into());
+                        }
+                    });
+                }
+            }
+        });
+    }
+
     slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
 }
 
