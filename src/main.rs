@@ -29,8 +29,23 @@ use ui::setup_ui;
 use uploader::run_background_uploader;
 
 fn main() {
+    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        let mut path = PathBuf::from(local_appdata);
+        path.push("ClipSyncer");
+        let _ = std::fs::create_dir_all(&path);
+        let _ = std::env::set_current_dir(&path);
+    }
+
     rustls::crypto::ring::default_provider().install_default().expect("Failed to install TLS provider");
     let storage = load_storage();
+
+    let autostart_enabled = {
+        let guard = storage.lock().expect("Fehler beim Lesen");
+        guard.autostart
+    };
+    if let Err(e) = storage::set_autostart(autostart_enabled) {
+        tracing::error!("Fehler beim Synchronisieren des Autostarts bei Startup: {:?}", e);
+    }
 
     let (
         current_delete_original,

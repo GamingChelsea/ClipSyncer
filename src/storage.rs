@@ -53,6 +53,7 @@ impl PrivacyStatus {
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
+#[serde(default)]
 pub struct CachedVideo {
     pub id: String,
     pub title: String,
@@ -135,6 +136,7 @@ pub struct AppStorage {
     pub active_account: usize,
     pub max_uploads_per_day: usize,
     pub language: String,
+    pub autostart: bool,
 }
 
 impl Default for AppStorage {
@@ -158,6 +160,7 @@ impl Default for AppStorage {
             active_account: 0,
             max_uploads_per_day: 6,
             language: "en".to_string(),
+            autostart: false,
         }
     }
 }
@@ -202,6 +205,32 @@ pub fn is_ffmpeg_available() -> bool {
 
 pub fn download_ffmpeg_local() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ffmpeg_sidecar::download::auto_download()?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn set_autostart(enabled: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let path = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    let (key, _) = hkcu.create_subkey_with_flags(path, KEY_WRITE)?;
+
+    if enabled {
+        if let Ok(exe_path) = std::env::current_exe() {
+            let exe_str = exe_path.to_string_lossy();
+            let value = format!("\"{}\"", exe_str);
+            key.set_value("ClipSyncer", &value)?;
+        }
+    } else {
+        let _ = key.delete_value("ClipSyncer");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_autostart(_enabled: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 

@@ -295,7 +295,27 @@ pub fn setup_ui(
             save_storage(&storage_for_thread);
         });
     });
-    ui.set_delete_original(current_notify);
+    ui.set_notify(current_notify);
+
+    let current_autostart = {
+        let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
+        guard.autostart
+    };
+
+    let storage_clone_autostart = Arc::clone(storage);
+    ui.on_autostart_changed(move |new_value| {
+        let storage_for_thread = Arc::clone(&storage_clone_autostart);
+        std::thread::spawn(move || {
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.autostart = new_value;
+            }
+            save_storage(&storage_for_thread);
+            if let Err(e) = crate::storage::set_autostart(new_value) {
+                tracing::error!("Fehler beim Einstellen des Autostarts: {:?}", e);
+            }
+        });
+    });
+    ui.set_autostart(current_autostart);
 
     let storage_clone_delete_original = Arc::clone(storage);
     let del_tx_clone = del_tx.clone();
@@ -304,7 +324,7 @@ pub fn setup_ui(
         let storage_for_thread = Arc::clone(&storage_clone_delete_original);
         std::thread::spawn(move || {
             if let Ok(mut guard) = storage_for_thread.lock() {
-                guard.notify = new_value;
+                guard.delete_original = new_value;
             }
             save_storage(&storage_for_thread);
         });
@@ -482,7 +502,7 @@ pub fn setup_ui(
 
                 save_storage(&storage_for_thread);
 
-                let (clip_loc, del_orig, notify_val, privacy, active_acc, max_uploads, encoder_idx, has_token, needs_secret, uploaded_videos, language) = {
+                let (clip_loc, del_orig, notify_val, privacy, active_acc, max_uploads, encoder_idx, has_token, needs_secret, uploaded_videos, language, autostart) = {
                     let guard = storage_for_thread.lock().unwrap();
                     (
                         guard.clip_location.clone(),
@@ -496,6 +516,7 @@ pub fn setup_ui(
                         guard.client_secret.is_none(),
                         guard.uploaded_videos.clone(),
                         guard.language.clone(),
+                        guard.autostart,
                     )
                 };
 
@@ -504,6 +525,10 @@ pub fn setup_ui(
                 let _ = not_tx_for_thread.send(notify_val);
                 let _ = ps_tx_for_thread.send(privacy);
                 let _ = active_account_tx_for_thread.send(active_acc);
+
+                if let Err(e) = crate::storage::set_autostart(autostart) {
+                    tracing::error!("Fehler beim Einstellen des Autostarts nach Import: {:?}", e);
+                }
 
                 for video in uploaded_videos.iter() {
                     let video_entry = VideoChannelEntry {
@@ -528,6 +553,7 @@ pub fn setup_ui(
                         ui.set_max_uploads_value(max_uploads as i32);
                         ui.set_logged_in(has_token);
                         ui.set_needs_client_secret(needs_secret);
+                        ui.set_autostart(autostart);
 
                         let i18n_strings = crate::i18n::get_i18n_strings(&language);
                         ui.set_i18n(i18n_strings.clone());
@@ -577,9 +603,7 @@ pub fn setup_ui(
         while let Ok(event) = menu_receiver.recv() {
             if event.id == quit_item_id {
                 save_storage(&storage_2_for_thread);
-                let _ = slint::invoke_from_event_loop(|| {
-                    slint::quit_event_loop().expect("Fehler den Event Loop zu schließen")
-                });
+                std::process::exit(0);
             } else if event.id == open_item_id {
                 show_slint_window(ui_handle.clone());
             }

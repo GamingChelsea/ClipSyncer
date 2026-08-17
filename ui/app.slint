@@ -63,6 +63,8 @@ export struct I18nStrings {
     max_uploads_desc: string,
     notifications_title: string,
     notifications_desc: string,
+    autostart_title: string,
+    autostart_desc: string,
     deletion_title: string,
     deletion_desc: string,
     log_viewer_title: string,
@@ -154,6 +156,8 @@ export component AppWindow inherits Window {
     in-out property <bool> is_uploading: false;
     in-out property <string> next_check_text: "";
     callback import_config();
+    in-out property <bool> autostart: false;
+    callback autostart_changed(bool);
 
     Main := ScrollView {
         VerticalLayout {
@@ -465,6 +469,20 @@ export component AppWindow inherits Window {
                                 checked <=> notify;
                                 toggled => {
                                     root.notify_changed(root.notify);
+                                }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: root.i18n.autostart_title;
+                            description-text: root.i18n.autostart_desc;
+
+                            Switch {
+                                checked <=> autostart;
+                                toggled => {
+                                    root.autostart_changed(root.autostart);
                                 }
                             }
                         }

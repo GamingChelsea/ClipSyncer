@@ -5,6 +5,13 @@ use tracing::{error, info};
 
 use crate::storage::VideoEncoder;
 
+fn create_command(program: &str) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd
+}
+
 pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {
     use tokio::fs::read_dir;
     let mut pending = Vec::new();
@@ -124,7 +131,7 @@ pub async fn merge_multiple_videos(
         return false;
     }
 
-    let status = tokio::process::Command::new("ffmpeg")
+    let status = create_command("ffmpeg")
         .arg("-y")
         .args(["-loglevel", "error"])
         .args(["-f", "concat", "-safe", "0", "-i"])
@@ -148,7 +155,7 @@ pub async fn merge_multiple_videos(
 }
 
 pub async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
-    let output = tokio::process::Command::new("ffprobe")
+    let output = create_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -187,7 +194,7 @@ pub async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
 }
 
 pub async fn probe_audio_track_count(path: &Path) -> usize {
-    if let Ok(output) = tokio::process::Command::new("ffprobe")
+    if let Ok(output) = create_command("ffprobe")
         .args([
             "-v",
             "error",
@@ -246,7 +253,7 @@ pub async fn normalize_clip(
         _ => "libx264",
     };
 
-    let mut cmd = tokio::process::Command::new("ffmpeg");
+    let mut cmd = create_command("ffmpeg");
     cmd.arg("-y")
         .args(["-loglevel", "error"])
         .arg("-i")
@@ -327,10 +334,10 @@ pub async fn normalize_clip(
 }
 
 pub async fn process_video_file(input_file_path: &Path, output_file_path: &Path) -> bool {
-    let status = tokio::process::Command::new("ffmpeg")
+    let status = create_command("ffmpeg")
         .arg("-y")
         .args(["-loglevel", "error"])
-        .arg("-i")
+        .args(["-i"])
         .arg(input_file_path)
         .args(["-c", "copy", "-movflags", "+faststart"])
         .arg(output_file_path)
@@ -361,7 +368,7 @@ pub fn path_to_string(file_path: &Path) -> String {
 }
 
 pub async fn detect_best_encoder() -> VideoEncoder {
-    let output = tokio::process::Command::new("ffmpeg")
+    let output = create_command("ffmpeg")
         .arg("-encoders")
         .output()
         .await;
