@@ -6,10 +6,16 @@ use tracing::{error, info};
 use crate::storage::VideoEncoder;
 
 fn create_command(program: &str) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(program);
     #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
-    cmd
+    {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.creation_flags(0x0800_0000);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        tokio::process::Command::new(program)
+    }
 }
 
 pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {

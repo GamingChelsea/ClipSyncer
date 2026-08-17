@@ -31,8 +31,8 @@ jobs:
         id: get_version
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          if ($tag -match '^v?(.*)$') {
+          $ref = "${{ github.ref_name }}"
+          if ($ref -match '^v?(\d+\.\d+(\.\d+)?)') {
             $version = $matches[1]
           } else {
             $version = "0.1.0"
@@ -48,17 +48,40 @@ jobs:
           $ver = "${{ steps.get_version.outputs.VERSION }}"
           New-Item -ItemType Directory -Force -Path target\wix
 
-          if (Test-Path ".\wix314\candle.exe") {
-            $wixPath = (Resolve-Path ".\wix314\").Path + "\"
-          } elseif (Test-Path "C:\Program Files (x86)\WiX Toolset v3.11\bin\candle.exe") {
-            $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin\"
+          $wixBin = $null
+          if (Get-Command "candle.exe" -ErrorAction SilentlyContinue) {
+            $wixBin = Split-Path (Get-Command "candle.exe").Source
+          } elseif (Test-Path ".\wix314\candle.exe") {
+            $wixBin = (Resolve-Path ".\wix314").Path
           } else {
-            choco install wixtoolset -y
-            $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin\"
+            $candidates = @(
+              "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+              "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+              "C:\Program Files\WiX Toolset v3.14\bin",
+              "C:\Program Files\WiX Toolset v3.11\bin",
+              "C:\ProgramData\chocolatey\lib\wixtoolset\tools",
+              "C:\ProgramData\chocolatey\bin"
+            )
+            foreach ($c in $candidates) {
+              if (Test-Path "$c\candle.exe") {
+                $wixBin = $c
+                break
+              }
+            }
+            if (-not $wixBin) {
+              choco install wixtoolset -y --force
+              foreach ($c in $candidates) {
+                if (Test-Path "$c\candle.exe") {
+                  $wixBin = $c
+                  break
+                }
+              }
+            }
           }
 
-          & "$($wixPath)candle.exe" -arch x64 "-dCargoTargetBinDir=target\release" "-dVersion=$ver" -ext "$($wixPath)WixUIExtension.dll" -ext "$($wixPath)WixUtilExtension.dll" -out target\wix\main.wixobj wix\main.wxs
-          & "$($wixPath)light.exe" -ext "$($wixPath)WixUIExtension.dll" -ext "$($wixPath)WixUtilExtension.dll" -out "target\wix\ClipSyncer-$ver-x86_64.msi" target\wix\main.wixobj
+          Write-Host "Using WiX Toolset from: $wixBin"
+          & "$wixBin\candle.exe" -arch x64 "-dCargoTargetBinDir=target\release" "-dVersion=$ver" -ext "$wixBin\WixUIExtension.dll" -ext "$wixBin\WixUtilExtension.dll" -out target\wix\main.wixobj wix\main.wxs
+          & "$wixBin\light.exe" -ext "$wixBin\WixUIExtension.dll" -ext "$wixBin\WixUtilExtension.dll" -out "target\wix\ClipSyncer-$ver-x86_64.msi" target\wix\main.wixobj
 
       - name: Package Standalone Portable Zip
         shell: pwsh
@@ -95,7 +118,7 @@ jobs:
       - name: Install Linux Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libglib2.0-dev libgtk-3-dev libayatana-appindicator3-dev libfontconfig1-dev libfreetype6-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libasound2-dev libssl-dev
+          sudo apt-get install -y pkg-config libglib2.0-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev libfreetype6-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libasound2-dev libssl-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -106,9 +129,13 @@ jobs:
       - name: Extract Tag Version
         id: get_version
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "VERSION=${VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" =~ ^v?([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION="0.1.0"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build Release Binary
         run: cargo build --release
@@ -151,9 +178,13 @@ jobs:
       - name: Extract Tag Version
         id: get_version
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "VERSION=${VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+          REF="${{ github.ref_name }}"
+          if [[ "$REF" =~ ^v?([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION="0.1.0"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build Release Binary
         run: cargo build --release
