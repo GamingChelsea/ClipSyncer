@@ -1,6 +1,12 @@
 /target
 /videos
-/wix
 /wix314
+*.wixobj
+*.wixpdb
 config.ron
-config copy.ron
+config*.ron
+client_secret.json
+token_cache*.json
+*.log
+.idea/
+.vscode/

@@ -1348,9 +1348,18 @@ async fn handle_successful_upload(
 
     let should_send_notification = *not_rx.borrow();
     if should_send_notification {
+        let lang = {
+            let guard = storage.lock().unwrap();
+            guard.language.clone()
+        };
+        let (summary, body) = if lang.to_lowercase() == "de" {
+            ("Erfolgreich hochgeladen", "Clip wurde erfolgreich auf YouTube hochgeladen.")
+        } else {
+            ("Upload successful", "Clip was successfully uploaded to YouTube.")
+        };
         let _ = notify_rust::Notification::new()
-            .summary("Erfolgreich hochgeladen") // Die Überschrift
-            .body("Clip wurde erfolgreich auf YouTube hochgeladen.")
+            .summary(summary)
+            .body(body)
             .appname("Clip Syncer")
             .show();
     }

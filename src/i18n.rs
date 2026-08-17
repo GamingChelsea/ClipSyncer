@@ -38,6 +38,16 @@ pub fn get_i18n_strings(lang: &str) -> I18nStrings {
             google_api_setup_title: "Google API Setup".into(),
             google_api_setup_desc: "Um auf YouTube hochzuladen, wird eine 'client_secret.json' benötigt:\n\n1. Gehe zu console.cloud.google.com und erstelle ein Projekt.\n2. Aktiviere dort die 'YouTube Data API v3'.\n3. Erstelle unter Anmeldedaten eine 'OAuth-Client-ID' (Typ: Desktop-App).\n4. Lade die JSON-Datei herunter und wähle sie hier aus.".into(),
             btn_select_file: "Datei auswählen".into(),
+            language_title: "Sprache:".into(),
+            language_desc: "Anzeigesprache der Benutzeroberfläche".into(),
+            vis_public: "Öffentlich".into(),
+            vis_unlisted: "Nicht gelistet".into(),
+            vis_private: "Privat".into(),
+            encoder_auto: "Automatisch".into(),
+            account_main: "Hauptaccount".into(),
+            account_alt: "Zweitaccount".into(),
+            account_auto: "Automatisch".into(),
+            upload_progress_title: "Upload-Fortschritt...".into(),
         },
         // Default to English ("en")
         _ => I18nStrings {
@@ -76,6 +86,16 @@ pub fn get_i18n_strings(lang: &str) -> I18nStrings {
             google_api_setup_title: "Google API Setup".into(),
             google_api_setup_desc: "To upload to YouTube, a 'client_secret.json' is required:\n\n1. Go to console.cloud.google.com and create a project.\n2. Enable 'YouTube Data API v3'.\n3. Create 'OAuth client ID' (Type: Desktop app) under credentials.\n4. Download the JSON file and select it here.".into(),
             btn_select_file: "Select file".into(),
+            language_title: "Language:".into(),
+            language_desc: "User interface display language".into(),
+            vis_public: "Public".into(),
+            vis_unlisted: "Unlisted".into(),
+            vis_private: "Private".into(),
+            encoder_auto: "Auto".into(),
+            account_main: "Main Account".into(),
+            account_alt: "Secondary Account".into(),
+            account_auto: "Auto".into(),
+            upload_progress_title: "Upload progress...".into(),
         },
     }
 }

@@ -1,0 +1,157 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (MSI & EXE)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Extract Tag Version
+        id: get_version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -match '^v?(.*)$') {
+            $version = $matches[1]
+          } else {
+            $version = "0.1.0"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Build MSI Installer with WiX
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.get_version.outputs.VERSION }}"
+          New-Item -ItemType Directory -Force -Path target\wix
+
+          if (Test-Path ".\wix314\candle.exe") {
+            $wixPath = (Resolve-Path ".\wix314\").Path + "\"
+          } elseif (Test-Path "C:\Program Files (x86)\WiX Toolset v3.11\bin\candle.exe") {
+            $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin\"
+          } else {
+            choco install wixtoolset -y
+            $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin\"
+          }
+
+          & "$($wixPath)candle.exe" -arch x64 "-dCargoTargetBinDir=target\release" "-dVersion=$ver" -ext "$($wixPath)WixUIExtension.dll" -ext "$($wixPath)WixUtilExtension.dll" -out target\wix\main.wixobj wix\main.wxs
+          & "$($wixPath)light.exe" -ext "$($wixPath)WixUIExtension.dll" -ext "$($wixPath)WixUtilExtension.dll" -out "target\wix\ClipSyncer-$ver-x86_64.msi" target\wix\main.wixobj
+
+      - name: Package Standalone Portable Zip
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.get_version.outputs.VERSION }}"
+          New-Item -ItemType Directory -Force -Path target\portable
+          Copy-Item target\release\ClipSyncer.exe target\portable\
+          Compress-Archive -Path target\portable\* -DestinationPath "target\wix\ClipSyncer-$ver-windows-x86_64.zip"
+
+      - name: Upload Windows Artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            target/wix/ClipSyncer-*.msi
+            target/wix/ClipSyncer-*.zip
+
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype6-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libasound2-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Extract Tag Version
+        id: get_version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "VERSION=${VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Package Linux Tarball
+        run: |
+          VER="${{ steps.get_version.outputs.VERSION }}"
+          mkdir -p target/dist
+          cp target/release/ClipSyncer target/dist/
+          cd target/dist
+          tar -czvf "../ClipSyncer-${VER}-linux-x86_64.tar.gz" ClipSyncer
+          cd ../..
+
+      - name: Upload Linux Artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/ClipSyncer-*-linux-x86_64.tar.gz
+
+  build-macos:
+    name: Build macOS (Apple Silicon)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Extract Tag Version
+        id: get_version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "VERSION=${VERSION:-0.1.0}" >> $GITHUB_OUTPUT
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Package macOS Tarball
+        run: |
+          VER="${{ steps.get_version.outputs.VERSION }}"
+          mkdir -p target/dist
+          cp target/release/ClipSyncer target/dist/
+          cd target/dist
+          tar -czvf "../ClipSyncer-${VER}-macos-aarch64.tar.gz" ClipSyncer
+          cd ../..
+
+      - name: Upload macOS Artifacts
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/ClipSyncer-*-macos-aarch64.tar.gz

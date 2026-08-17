@@ -78,6 +78,16 @@ export struct I18nStrings {
     google_api_setup_title: string,
     google_api_setup_desc: string,
     btn_select_file: string,
+    language_title: string,
+    language_desc: string,
+    vis_public: string,
+    vis_unlisted: string,
+    vis_private: string,
+    encoder_auto: string,
+    account_main: string,
+    account_alt: string,
+    account_auto: string,
+    upload_progress_title: string,
 }
 
 component SettingsEntry inherits Rectangle {
@@ -158,6 +168,8 @@ export component AppWindow inherits Window {
     callback import_config();
     in-out property <bool> autostart: false;
     callback autostart_changed(bool);
+    in-out property <int> language_selection_index: 0;
+    callback language_change(int);
 
     Main := ScrollView {
         VerticalLayout {
@@ -214,7 +226,7 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             alignment: space-between;
                             Typography {
-                                text: "Upload-Fortschritt...";
+                                text: root.i18n.upload_progress_title;
                                 variant: TextVariant.body-sm;
                                 tone: TextTone.muted;
                             }
@@ -351,6 +363,22 @@ export component AppWindow inherits Window {
                         clip: true;
 
                         SettingsEntry {
+                            title-text: root.i18n.language_title;
+                            description-text: root.i18n.language_desc;
+
+                            Select {
+                                items: [
+                                    { label: "Deutsch", value: "de" },
+                                    { label: "English", value: "en" }
+                                ];
+                                selected-index <=> language_selection_index;
+                                changed(i) => { language_change(i) }
+                            }
+                        }
+
+                        Separator { }
+
+                        SettingsEntry {
                             title-text: root.i18n.now_upload_title;
                             description-text: root.i18n.now_upload_desc;
 
@@ -399,7 +427,7 @@ export component AppWindow inherits Window {
 
                             Select {
                                 items: [
-                                    { label: "Automatisch", value: "auto" },
+                                    { label: root.i18n.encoder_auto, value: "auto" },
                                     { label: "CPU", value: "cpu" },
                                     { label: "Nvidia", value: "nvidia" },
                                     { label: "AMD", value: "amd" },
@@ -418,9 +446,9 @@ export component AppWindow inherits Window {
 
                             Select {
                                 items: [
-                                    { label: "Öffentlich", value: "public" },
-                                    { label: "Nicht Gelistet", value: "unlisted" },
-                                    { label: "Privat", value: "private" }
+                                    { label: root.i18n.vis_public, value: "public" },
+                                    { label: root.i18n.vis_unlisted, value: "unlisted" },
+                                    { label: root.i18n.vis_private, value: "private" }
                                 ];
                                 selected-index <=> visibility_selection_index;
                                 changed(i) => { privacy_change(i) }
@@ -435,9 +463,9 @@ export component AppWindow inherits Window {
 
                             Select {
                                 items: [
-                                    { label: "Hauptaccount", value: "0" },
-                                    { label: "Zweitaccount", value: "1" },
-                                    { label: "Automatisch", value: "2" }
+                                    { label: root.i18n.account_main, value: "0" },
+                                    { label: root.i18n.account_alt, value: "1" },
+                                    { label: root.i18n.account_auto, value: "2" }
                                 ];
                                 selected-index <=> active_account_index;
                                 changed(i) => { active_account_change(i) }

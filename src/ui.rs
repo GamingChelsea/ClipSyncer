@@ -56,6 +56,8 @@ pub fn setup_ui(
     let i18n_strings = crate::i18n::get_i18n_strings(&language);
     ui.set_i18n(i18n_strings.clone());
     ui.set_status_text(i18n_strings.status_waiting);
+    let initial_lang_idx = if language.to_lowercase() == "de" { 0 } else { 1 };
+    ui.set_language_selection_index(initial_lang_idx);
 
     let has_token = {
         let guard = storage.lock().expect("Fehler beim Lesen von AppStorage");
@@ -452,6 +454,31 @@ pub fn setup_ui(
         });
     });
 
+    let storage_clone_lang = Arc::clone(storage);
+    let ui_weak_lang = ui_weak.clone();
+    ui.on_language_change(move |val| {
+        let storage_for_thread = Arc::clone(&storage_clone_lang);
+        let ui_weak_for_thread = ui_weak_lang.clone();
+        std::thread::spawn(move || {
+            let new_lang = match val {
+                0 => "de",
+                _ => "en",
+            };
+            if let Ok(mut guard) = storage_for_thread.lock() {
+                guard.language = new_lang.to_string();
+            }
+            save_storage(&storage_for_thread);
+
+            let i18n_strings = crate::i18n::get_i18n_strings(new_lang);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_for_thread.upgrade() {
+                    ui.set_i18n(i18n_strings.clone());
+                    ui.set_status_text(i18n_strings.status_waiting);
+                }
+            });
+        });
+    });
+
     let storage_clone_import = Arc::clone(storage);
     let ui_weak_import = ui_weak.clone();
     let path_tx_import = path_tx.clone();
@@ -558,6 +585,8 @@ pub fn setup_ui(
                         let i18n_strings = crate::i18n::get_i18n_strings(&language);
                         ui.set_i18n(i18n_strings.clone());
                         ui.set_status_text(i18n_strings.status_waiting);
+                        let lang_idx = if language.to_lowercase() == "de" { 0 } else { 1 };
+                        ui.set_language_selection_index(lang_idx);
                     }
                 });
             }
