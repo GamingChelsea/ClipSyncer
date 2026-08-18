@@ -88,6 +88,14 @@ export struct I18nStrings {
     account_alt: string,
     account_auto: string,
     upload_progress_title: string,
+    status_scanning: string,
+    status_processing: string,
+    status_uploading: string,
+    status_no_clips: string,
+    status_limit_reached: string,
+    status_completed: string,
+    status_cancelled: string,
+    btn_cancel: string,
 }
 
 component SettingsEntry inherits Rectangle {
@@ -152,6 +160,7 @@ export component AppWindow inherits Window {
     in-out property <int> encoder_selection_index;
     callback encoder_change(int);
     callback upload_now();
+    callback cancel_upload();
     callback link_clicked(string);
     in property <bool> logged_in: false;
     in property <bool> needs_client_secret: false;
@@ -164,6 +173,7 @@ export component AppWindow inherits Window {
     callback max_uploads_changed(int);
     in-out property <float> upload_progress: 0.0;
     in-out property <bool> is_uploading: false;
+    in-out property <bool> is_processing: false;
     in-out property <string> next_check_text: "";
     callback import_config();
     in-out property <bool> autostart: false;
@@ -382,12 +392,27 @@ export component AppWindow inherits Window {
                             title-text: root.i18n.now_upload_title;
                             description-text: root.i18n.now_upload_desc;
 
-                            Button {
-                                clicked => {
-                                    upload_now();
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: end;
+
+                                if (root.is-processing || root.is-uploading): Button {
+                                    clicked => {
+                                        cancel_upload();
+                                    }
+                                    text: root.i18n.btn_cancel;
+                                    variant: ButtonVariant.outline;
                                 }
-                                text: root.i18n.btn_upload;
-                                variant: ButtonVariant.destructive;
+
+                                Button {
+                                    disabled: root.is-uploading || root.is-processing;
+                                    clicked => {
+                                        root.is-processing = true;
+                                        upload_now();
+                                    }
+                                    text: root.is-processing || root.is-uploading ? (root.is-uploading ? root.i18n.status_uploading : root.i18n.status_processing) : root.i18n.btn_upload;
+                                    variant: ButtonVariant.destructive;
+                                }
                             }
                         }
 

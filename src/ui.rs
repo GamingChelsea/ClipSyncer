@@ -40,6 +40,7 @@ pub fn setup_ui(
     not_tx: Arc<Sender<bool>>,
     ps_tx: Arc<Sender<PrivacyStatus>>,
     active_account_tx: Arc<Sender<usize>>,
+    cancel_tx: &Arc<Sender<bool>>,
     mut log_rx: tokio::sync::mpsc::Receiver<LogEntry>,
     video_tx: &Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     mut video_rx: tokio::sync::mpsc::Receiver<VideoChannelEntry>,
@@ -127,16 +128,53 @@ pub fn setup_ui(
 
     let storage_upload = Arc::clone(storage);
     let path_tx_upload = path_tx.clone();
+    let ui_weak_upload = ui_weak.clone();
+    let cancel_tx_upload = Arc::clone(cancel_tx);
     ui.on_upload_now(move || {
+        let _ = cancel_tx_upload.send(false);
         let storage_for_thread = Arc::clone(&storage_upload);
         let path_tx_for_thread = path_tx_upload.clone();
+        let ui_weak_for_thread = ui_weak_upload.clone();
         std::thread::spawn(move || {
-            if let Ok(mut storage_ok) = storage_for_thread.lock() {
+            let (clip_loc, lang) = if let Ok(mut storage_ok) = storage_for_thread.lock() {
                 storage_ok.upload_all = true;
                 storage_ok.last_upload_date = chrono::Local::now() - chrono::Duration::hours(4);
-                if let Some(path) = &storage_ok.clip_location {
-                    let _ = &path_tx_for_thread.send_replace(Some(path.clone()));
+                (storage_ok.clip_location.clone(), storage_ok.language.clone())
+            } else {
+                (None, "en".to_string())
+            };
+
+            let i18n_strings = crate::i18n::get_i18n_strings(&lang);
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_for_thread.upgrade() {
+                    ui.set_is_processing(true);
+                    ui.set_status_text(i18n_strings.status_scanning.clone());
                 }
+            });
+
+            if let Some(path) = clip_loc {
+                let _ = path_tx_for_thread.send_replace(Some(path));
+            }
+        });
+    });
+
+    let cancel_tx_cancel = Arc::clone(cancel_tx);
+    let ui_weak_cancel = ui_weak.clone();
+    let storage_cancel = Arc::clone(storage);
+    ui.on_cancel_upload(move || {
+        let _ = cancel_tx_cancel.send(true);
+        let ui_weak_for_thread = ui_weak_cancel.clone();
+        let storage_for_thread = Arc::clone(&storage_cancel);
+        let _ = slint::invoke_from_event_loop(move || {
+            let lang = storage_for_thread
+                .lock()
+                .map(|g| g.language.clone())
+                .unwrap_or_else(|_| "en".to_string());
+            let i18n_strings = crate::i18n::get_i18n_strings(&lang);
+            if let Some(ui) = ui_weak_for_thread.upgrade() {
+                ui.set_status_text(i18n_strings.status_cancelled);
+                ui.set_is_processing(false);
+                ui.set_is_uploading(false);
             }
         });
     });

@@ -300,6 +300,8 @@ pub async fn run_background_uploader(
     mut not_rx: Receiver<bool>,
     mut ps_rx: Receiver<PrivacyStatus>,
     mut active_account_rx: Receiver<usize>,
+    mut cancel_rx: Receiver<bool>,
+    cancel_tx: Arc<Sender<bool>>,
     video_tx: Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     storage: Arc<Mutex<AppStorage>>,
     ui_weak: slint::Weak<AppWindow>,
@@ -526,6 +528,8 @@ pub async fn run_background_uploader(
         &video_tx,
         &storage,
         &ui_weak,
+        &mut cancel_rx,
+        &cancel_tx,
         false,
     )
     .await;
@@ -560,6 +564,8 @@ pub async fn run_background_uploader(
                     &video_tx,
                     &storage,
                     &ui_weak,
+                    &mut cancel_rx,
+                    &cancel_tx,
                     true,
                 ).await;
                 let next_check = chrono::Local::now() + chrono::Duration::hours(3);
@@ -620,8 +626,6 @@ pub async fn run_background_uploader(
                     new_selected
                 };
 
-
-
                 if new_account != active_account {
                     info!("Aktiver Account im UI geändert auf: {}", new_account + 1);
                     if switch_account(
@@ -652,6 +656,8 @@ pub async fn run_background_uploader(
                             &video_tx,
                             &storage,
                             &ui_weak,
+                            &mut cancel_rx,
+                            &cancel_tx,
                             true,
                         ).await;
                         let next_check = chrono::Local::now() + chrono::Duration::hours(3);
@@ -677,6 +683,8 @@ pub async fn run_background_uploader(
                     &video_tx,
                     &storage,
                     &ui_weak,
+                    &mut cancel_rx,
+                    &cancel_tx,
                     false,
                 ).await;
                 let next_check = chrono::Local::now() + chrono::Duration::hours(3);
@@ -684,6 +692,35 @@ pub async fn run_background_uploader(
             }
         }
     }
+}
+
+fn update_status(ui_weak: &slint::Weak<AppWindow>, lang: &str, status_key: &str) {
+    let i18n = crate::i18n::get_i18n_strings(lang);
+    let text = match status_key {
+        "scanning" => i18n.status_scanning,
+        "processing" => i18n.status_processing,
+        "uploading" => i18n.status_uploading,
+        "no_clips" => i18n.status_no_clips,
+        "limit_reached" => i18n.status_limit_reached,
+        "completed" => i18n.status_completed,
+        _ => i18n.status_waiting,
+    };
+    let ui_weak = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_status_text(text);
+        }
+    });
+}
+
+fn set_processing_state(ui_weak: &slint::Weak<AppWindow>, is_processing: bool, is_uploading: bool) {
+    let ui_weak = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_is_processing(is_processing);
+            ui.set_is_uploading(is_uploading);
+        }
+    });
 }
 
 async fn perform_check_and_upload(
@@ -701,8 +738,27 @@ async fn perform_check_and_upload(
     video_tx: &Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     storage: &Arc<Mutex<AppStorage>>,
     ui_weak: &slint::Weak<AppWindow>,
+    cancel_rx: &mut Receiver<bool>,
+    _cancel_tx: &Arc<Sender<bool>>,
     ignore_time_limit: bool,
 ) {
+    let lang = {
+        let guard = storage.lock().expect("Fehler");
+        guard.language.clone()
+    };
+
+    if *cancel_rx.borrow() {
+        info!("Vorgang vor Start abgebrochen.");
+        update_status(ui_weak, &lang, "cancelled");
+        set_processing_state(ui_weak, false, false);
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        update_status(ui_weak, &lang, "waiting");
+        return;
+    }
+
+    update_status(ui_weak, &lang, "scanning");
+    set_processing_state(ui_weak, true, false);
+
     let now = chrono::Local::now();
     let mut upload_all = false;
 
@@ -749,6 +805,10 @@ async fn perform_check_and_upload(
             "Tägliches Gesamtuploadlimit von {} erreicht. Warte auf nächsten Tag.",
             max_limit
         );
+        update_status(ui_weak, &lang, "limit_reached");
+        set_processing_state(ui_weak, false, false);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        update_status(ui_weak, &lang, "waiting");
         return;
     }
 
@@ -811,6 +871,8 @@ async fn perform_check_and_upload(
             "Letzter Upload ist erst {} Minuten her.",
             remaining_time.num_minutes()
         );
+        set_processing_state(ui_weak, false, false);
+        update_status(ui_weak, &lang, "waiting");
         return;
     }
 
@@ -818,6 +880,8 @@ async fn perform_check_and_upload(
         let active_path = path_rx.borrow().clone();
         if active_path.is_none() {
             info!("Warten auf Pfadauswahl im UI...");
+            set_processing_state(ui_weak, false, false);
+            update_status(ui_weak, &lang, "waiting");
             return;
         }
         active_path.unwrap()
@@ -841,6 +905,8 @@ async fn perform_check_and_upload(
                 ui.set_selected_path("Kein Pfad ausgewählt".into());
             }
         });
+        set_processing_state(ui_weak, false, false);
+        update_status(ui_weak, &lang, "waiting");
         return;
     }
 
@@ -891,6 +957,10 @@ async fn perform_check_and_upload(
         let remaining_slots = usize::min(remaining_total_slots, remaining_active_slots);
         if remaining_slots == 0 {
             info!("Keine verbleibenden Upload-Slots für heute.");
+            update_status(ui_weak, &lang, "limit_reached");
+            set_processing_state(ui_weak, false, false);
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            update_status(ui_weak, &lang, "waiting");
             return;
         }
 
@@ -899,6 +969,13 @@ async fn perform_check_and_upload(
             chunk_size = pending_clips.len();
         }
         for clip_paket in pending_clips.chunks(chunk_size) {
+            if *cancel_rx.borrow() {
+                info!("Upload-Vorgang vom Benutzer abgebrochen.");
+                update_status(ui_weak, &lang, "cancelled");
+                set_processing_state(ui_weak, false, false);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                break;
+            }
             let (mut current_uploads_today, total_uploads, max_limit) = {
                 let guard = storage.lock().expect("Fehler");
                 (
@@ -952,6 +1029,8 @@ async fn perform_check_and_upload(
             }
 
             info!("Verarbeite ein Paket von {} Clips...", clip_paket.len());
+            update_status(ui_weak, &lang, "processing");
+            set_processing_state(ui_weak, true, false);
 
             let combined_output_temp = match tempfile::Builder::new()
                 .prefix("batch_combined_")
@@ -1024,6 +1103,7 @@ async fn perform_check_and_upload(
                 ..Default::default()
             };
 
+            update_status(ui_weak, &lang, "uploading");
             let upload_result = upload_video(
                 video,
                 final_processed_video.to_path_buf(),
@@ -1046,6 +1126,8 @@ async fn perform_check_and_upload(
                         *active_account,
                     )
                     .await;
+                    update_status(ui_weak, &lang, "completed");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
                 Err(UploadError::LimitExceeded) => {
                     info!("API meldet Limit überschritten.");
@@ -1126,6 +1208,7 @@ async fn perform_check_and_upload(
                                 ..Default::default()
                             };
 
+                            update_status(ui_weak, &lang, "uploading");
                             let retry_result = upload_video(
                                 video,
                                 final_processed_video.to_path_buf(),
@@ -1147,6 +1230,8 @@ async fn perform_check_and_upload(
                                     *active_account,
                                 )
                                 .await;
+                                update_status(ui_weak, &lang, "completed");
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                                 continue;
                             }
                         }
@@ -1162,7 +1247,12 @@ async fn perform_check_and_upload(
         }
     } else {
         info!("Keine neuen Clips gefunden");
+        update_status(ui_weak, &lang, "no_clips");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
+
+    set_processing_state(ui_weak, false, false);
+    update_status(ui_weak, &lang, "waiting");
 }
 
 async fn upload_video(

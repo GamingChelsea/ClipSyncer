@@ -61,6 +61,8 @@ fn main() {
         ps_tx,
         active_account_rx,
         active_account_tx,
+        cancel_rx,
+        cancel_tx,
         log_rx,
         video_tx,
         video_rx,
@@ -81,6 +83,7 @@ fn main() {
         not_tx,
         ps_tx,
         active_account_tx,
+        &cancel_tx,
         log_rx,
         &video_tx,
         video_rx,
@@ -96,6 +99,8 @@ fn main() {
             not_rx,
             ps_rx,
             active_account_rx,
+            cancel_rx,
+            cancel_tx,
             video_tx,
             storage_uploader,
             ui_weak_uploader,
@@ -166,6 +171,8 @@ fn setup_channels(
     Arc<Sender<PrivacyStatus>>,
     Receiver<usize>,
     Arc<Sender<usize>>,
+    Receiver<bool>,
+    Arc<Sender<bool>>,
     tokio::sync::mpsc::Receiver<LogEntry>,
     Arc<tokio::sync::mpsc::Sender<VideoChannelEntry>>,
     tokio::sync::mpsc::Receiver<VideoChannelEntry>,
@@ -222,6 +229,9 @@ fn setup_channels(
     let (video_tx, video_rx) = tokio::sync::mpsc::channel::<VideoChannelEntry>(100);
     let video_tx = Arc::new(video_tx);
 
+    let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+    let cancel_tx = Arc::new(cancel_tx);
+
     let current_notify = false;
     (
         current_delete_original,
@@ -237,6 +247,8 @@ fn setup_channels(
         ps_tx,
         active_account_rx,
         active_account_tx,
+        cancel_rx,
+        cancel_tx,
         log_rx,
         video_tx,
         video_rx,

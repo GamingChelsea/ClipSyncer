@@ -48,6 +48,14 @@ pub fn get_i18n_strings(lang: &str) -> I18nStrings {
             account_alt: "Zweitaccount".into(),
             account_auto: "Automatisch".into(),
             upload_progress_title: "Upload-Fortschritt...".into(),
+            status_scanning: "Suche nach neuen Clips...".into(),
+            status_processing: "Verarbeite & mische Clips...".into(),
+            status_uploading: "Lade Video auf YouTube hoch...".into(),
+            status_no_clips: "Keine neuen Clips gefunden".into(),
+            status_limit_reached: "Tägliches Upload-Limit erreicht".into(),
+            status_completed: "Upload erfolgreich abgeschlossen!".into(),
+            status_cancelled: "Vorgang abgebrochen".into(),
+            btn_cancel: "Abbrechen".into(),
         },
         // Default to English ("en")
         _ => I18nStrings {
@@ -96,6 +104,14 @@ pub fn get_i18n_strings(lang: &str) -> I18nStrings {
             account_alt: "Secondary Account".into(),
             account_auto: "Auto".into(),
             upload_progress_title: "Upload progress...".into(),
+            status_scanning: "Scanning for new clips...".into(),
+            status_processing: "Processing & merging clips...".into(),
+            status_uploading: "Uploading video to YouTube...".into(),
+            status_no_clips: "No new clips found".into(),
+            status_limit_reached: "Daily upload limit reached".into(),
+            status_completed: "Upload completed successfully!".into(),
+            status_cancelled: "Operation cancelled".into(),
+            btn_cancel: "Cancel".into(),
         },
     }
 }

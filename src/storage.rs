@@ -159,7 +159,7 @@ impl Default for AppStorage {
             last_upload_date_2: chrono::Local::now() - chrono::Duration::hours(4),
             active_account: 0,
             max_uploads_per_day: 6,
-            language: "de".to_string(),
+            language: "en".to_string(),
             autostart: false,
         }
     }
