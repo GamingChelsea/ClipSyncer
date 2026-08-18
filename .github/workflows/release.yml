@@ -99,14 +99,6 @@ jobs:
             target/wix/ClipSyncer-*.msi
             target/wix/ClipSyncer-*.zip
 
-      - name: Upload Windows Release Assets
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            target/wix/ClipSyncer-*.msi
-            target/wix/ClipSyncer-*.zip
-
   build-linux:
     name: Build Linux (x86_64)
     runs-on: ubuntu-latest
@@ -155,12 +147,6 @@ jobs:
           name: ClipSyncer-linux
           path: target/ClipSyncer-*-linux-x86_64.tar.gz
 
-      - name: Upload Linux Release Assets
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: target/ClipSyncer-*-linux-x86_64.tar.gz
-
   build-macos:
     name: Build macOS (Apple Silicon)
     runs-on: macos-latest
@@ -204,8 +190,21 @@ jobs:
           name: ClipSyncer-macos
           path: target/ClipSyncer-*-macos-aarch64.tar.gz
 
-      - name: Upload macOS Release Assets
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+  publish-release:
+    name: Publish Release
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          files: target/ClipSyncer-*-macos-aarch64.tar.gz
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Build (master)' }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          files: release-assets/*
