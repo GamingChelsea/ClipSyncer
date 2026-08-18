@@ -1,6 +1,6 @@
 [package]
 name = "ClipSyncer"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["GamingChelsea"]
 description = "Synchronizes clip folders and uploads to YouTube automatically"
