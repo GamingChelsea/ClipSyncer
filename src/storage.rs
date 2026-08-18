@@ -60,6 +60,7 @@ pub struct CachedVideo {
     pub link: String,
     pub visibility: String,
     pub thumbnail_url: String,
+    #[serde(skip_serializing, default)]
     pub thumbnail_bytes: Option<Vec<u8>>,
 }
 
@@ -165,6 +166,31 @@ impl Default for AppStorage {
     }
 }
 
+pub fn get_thumbnail_cache_dir() -> PathBuf {
+    let mut path = if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+        let mut p = PathBuf::from(local_appdata);
+        p.push("ClipSyncer");
+        p
+    } else {
+        std::env::current_dir().unwrap_or_default()
+    };
+    path.push("thumbnails");
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+pub fn save_thumbnail_cache(video_id: &str, bytes: &[u8]) {
+    let dir = get_thumbnail_cache_dir();
+    let file_path = dir.join(format!("{}.jpg", video_id));
+    let _ = std::fs::write(file_path, bytes);
+}
+
+pub fn load_thumbnail_cache(video_id: &str) -> Option<Vec<u8>> {
+    let dir = get_thumbnail_cache_dir();
+    let file_path = dir.join(format!("{}.jpg", video_id));
+    std::fs::read(file_path).ok()
+}
+
 pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
     let storage_guard = storage.lock().expect("Fehler beim Storage Guard");
     let config = ron::ser::PrettyConfig::default().compact_arrays(true);
@@ -176,7 +202,7 @@ pub fn save_storage(storage: &Arc<Mutex<AppStorage>>) {
 
 pub fn load_storage() -> Arc<Mutex<AppStorage>> {
     let ron_content = std::fs::read_to_string("config.ron");
-    let output = match ron_content {
+    let mut output: AppStorage = match ron_content {
         Ok(content) => match ron::from_str(&content) {
             Ok(parsed) => parsed,
             Err(e) => {
@@ -196,7 +222,22 @@ pub fn load_storage() -> Arc<Mutex<AppStorage>> {
         },
         _ => AppStorage::default(),
     };
-    Arc::new(Mutex::new(output))
+
+    let mut had_legacy_bytes = false;
+    for v in &mut output.uploaded_videos {
+        if let Some(bytes) = &v.thumbnail_bytes {
+            save_thumbnail_cache(&v.id, bytes);
+            had_legacy_bytes = true;
+        } else if let Some(cached) = load_thumbnail_cache(&v.id) {
+            v.thumbnail_bytes = Some(cached);
+        }
+    }
+
+    let storage_arc = Arc::new(Mutex::new(output));
+    if had_legacy_bytes {
+        save_storage(&storage_arc);
+    }
+    storage_arc
 }
 
 pub fn is_ffmpeg_available() -> bool {

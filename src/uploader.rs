@@ -439,6 +439,7 @@ pub async fn run_background_uploader(
                                             Ok(resp) if resp.status().is_success() => {
                                                 if let Ok(bytes) = resp.bytes().await {
                                                     let bytes_vec = bytes.to_vec();
+                                                    crate::storage::save_thumbnail_cache(video_id, &bytes_vec);
                                                     info!(
                                                         "Thumbnail für Video {} erfolgreich nachgeladen ({} Bytes)",
                                                         video_id,
@@ -1391,7 +1392,9 @@ async fn handle_successful_upload(
                     {
                         Ok(response) if response.status().is_success() => {
                             if let Ok(bytes) = response.bytes().await {
-                                thumbnail_bytes = Some(bytes.to_vec());
+                                let bytes_vec = bytes.to_vec();
+                                crate::storage::save_thumbnail_cache(&video_id, &bytes_vec);
+                                thumbnail_bytes = Some(bytes_vec);
                                 break;
                             }
                         }

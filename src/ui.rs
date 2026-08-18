@@ -399,6 +399,9 @@ pub fn setup_ui(
                     }
 
                     if let Some(bytes) = img_bytes {
+                        if let Some(video_id) = link.split('=').last() {
+                            crate::storage::save_thumbnail_cache(video_id, &bytes);
+                        }
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_handle.upgrade() {
                                 let mut current_video: Vec<VideoEntry> =
