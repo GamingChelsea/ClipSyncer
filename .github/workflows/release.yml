@@ -27,17 +27,14 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Extract Tag Version
+      - name: Extract Version from Cargo.toml
         id: get_version
         shell: pwsh
         run: |
-          $ref = "${{ github.ref_name }}"
-          if ($ref -match '^v?(\d+\.\d+(\.\d+)?)') {
-            $version = $matches[1]
-          } else {
-            $version = "0.1.0"
-          }
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          if (-not $ver) { $ver = "0.1.0" }
+          Write-Host "Detected Version: $ver"
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
 
       - name: Build Release Binary
         run: cargo build --release
@@ -118,15 +115,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Extract Tag Version
+      - name: Extract Version from Cargo.toml
         id: get_version
         run: |
-          REF="${{ github.ref_name }}"
-          if [[ "$REF" =~ ^v?([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-          else
-            VERSION="0.1.0"
-          fi
+          VERSION=$(grep '^version =' Cargo.toml | head -n1 | cut -d '"' -f2)
+          if [ -z "$VERSION" ]; then VERSION="0.1.0"; fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build Release Binary
@@ -161,15 +154,11 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Extract Tag Version
+      - name: Extract Version from Cargo.toml
         id: get_version
         run: |
-          REF="${{ github.ref_name }}"
-          if [[ "$REF" =~ ^v?([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
-            VERSION="${BASH_REMATCH[1]}"
-          else
-            VERSION="0.1.0"
-          fi
+          VERSION=$(grep '^version =' Cargo.toml | head -n1 | cut -d '"' -f2)
+          if [ -z "$VERSION" ]; then VERSION="0.1.0"; fi
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build Release Binary
@@ -195,19 +184,42 @@ jobs:
     needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract Version Info
+        id: version_info
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -n1 | cut -d '"' -f2)
+          if [ -z "$VERSION" ]; then VERSION="0.1.0"; fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${VERSION}"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
-      - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'ClipSyncer Latest Release' }}
-          draft: false
-          prerelease: false
-          make_latest: true
-          generate_release_notes: true
-          files: release-assets/*
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version_info.outputs.TAG }}
+          VERSION: ${{ steps.version_info.outputs.VERSION }}
+        run: |
+          # Delete existing release & remote tag if present to reset created_at timestamp and avoid duplicate changelogs
+          gh release delete "$TAG" --cleanup-tag -y || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          # Create a fresh release with current assets, fresh timestamp, and clean generated notes
+          gh release create "$TAG" release-assets/* \
+            --title "ClipSyncer v${VERSION}" \
+            --generate-notes \
+            --latest
