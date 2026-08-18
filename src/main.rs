@@ -23,6 +23,7 @@ mod uploader;
 mod video;
 mod i18n;
 pub mod auto_updater;
+pub mod single_instance;
 
 use logger::SlintLayer;
 use storage::{AppStorage, PrivacyStatus, load_storage};
@@ -30,6 +31,10 @@ use ui::setup_ui;
 use uploader::run_background_uploader;
 
 fn main() {
+    if let single_instance::InstanceCheck::Secondary = single_instance::check_or_notify() {
+        return;
+    }
+
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
         let mut path = PathBuf::from(local_appdata);
         path.push("ClipSyncer");
@@ -89,6 +94,8 @@ fn main() {
         &video_tx,
         video_rx,
     );
+
+    single_instance::start_ipc_server(ui_weak.clone());
 
     let ui_weak_uploader = ui_weak.clone();
     let storage_uploader = Arc::clone(&storage);
