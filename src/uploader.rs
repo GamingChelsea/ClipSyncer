@@ -471,7 +471,6 @@ pub async fn run_background_uploader(
                                                         }
                                                     }
                                                     if let Some(entry) = updated_entry {
-                                                        save_storage(&storage);
                                                         let _ = video_tx.send(entry).await;
                                                     }
                                                 }
@@ -504,6 +503,7 @@ pub async fn run_background_uploader(
                 }
             }
         }
+        save_storage(&storage);
     }
 
     let _ = path_rx.borrow_and_update();
@@ -719,6 +719,9 @@ fn set_processing_state(ui_weak: &slint::Weak<AppWindow>, is_processing: bool, i
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_is_processing(is_processing);
             ui.set_is_uploading(is_uploading);
+            if !is_uploading {
+                ui.set_upload_progress(0.0);
+            }
         }
     });
 }

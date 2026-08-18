@@ -5,7 +5,7 @@ use tracing::{error, info};
 
 use crate::storage::VideoEncoder;
 
-fn create_command(program: &str) -> tokio::process::Command {
+fn create_command<P: AsRef<std::ffi::OsStr>>(program: P) -> tokio::process::Command {
     #[cfg(windows)]
     {
         let mut cmd = tokio::process::Command::new(program);
@@ -18,20 +18,38 @@ fn create_command(program: &str) -> tokio::process::Command {
     }
 }
 
+fn create_ffmpeg_cmd() -> tokio::process::Command {
+    let bin = ffmpeg_sidecar::paths::ffmpeg_path();
+    create_command(bin)
+}
+
+fn create_ffprobe_cmd() -> tokio::process::Command {
+    let bin = ffmpeg_sidecar::ffprobe::ffprobe_path();
+    create_command(bin)
+}
+
 pub async fn get_pending_clips(path: &Path, uploaded_files: &[String]) -> Vec<PathBuf> {
     use tokio::fs::read_dir;
     let mut pending = Vec::new();
 
-    let mut entries = read_dir(path)
-        .await
-        .expect("Pfad konnte nicht geöffnet werden");
+    let mut entries = match read_dir(path).await {
+        Ok(e) => e,
+        Err(err) => {
+            error!(error = ?err, "Pfad konnte nicht geöffnet werden: {:?}", path);
+            return pending;
+        }
+    };
 
-    while let Some(entry) = entries.next_entry().await.expect("Fehler beim Lesen") {
+    while let Ok(Some(entry)) = entries.next_entry().await {
         let file_path = entry.path();
 
         if let Some(stem) = file_path.file_stem() {
-            if stem.to_string_lossy().ends_with("_converted")
-                || stem.to_string_lossy().ends_with("_combined")
+            let stem_str = stem.to_string_lossy();
+            if stem_str.ends_with("_converted")
+                || stem_str.ends_with("_combined")
+                || stem_str.starts_with("norm_tmp_")
+                || stem_str.starts_with("batch_combined_")
+                || stem_str.starts_with("batch_final_")
             {
                 continue;
             }
@@ -55,6 +73,10 @@ pub async fn merge_multiple_videos(
     video_encoder: VideoEncoder,
 ) -> bool {
     use tokio::io::AsyncWriteExt;
+
+    if chunks.is_empty() {
+        return false;
+    }
 
     let (target_w, target_h) = match probe_resolution(&chunks[0]).await {
         Some(res) => res,
@@ -137,7 +159,7 @@ pub async fn merge_multiple_videos(
         return false;
     }
 
-    let status = create_command("ffmpeg")
+    let status = create_ffmpeg_cmd()
         .arg("-y")
         .args(["-loglevel", "error"])
         .args(["-f", "concat", "-safe", "0", "-i"])
@@ -161,7 +183,7 @@ pub async fn merge_multiple_videos(
 }
 
 pub async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
-    let output = create_command("ffprobe")
+    let output = create_ffprobe_cmd()
         .args([
             "-v",
             "error",
@@ -200,7 +222,7 @@ pub async fn probe_resolution(path: &Path) -> Option<(u32, u32)> {
 }
 
 pub async fn probe_audio_track_count(path: &Path) -> usize {
-    if let Ok(output) = create_command("ffprobe")
+    if let Ok(output) = create_ffprobe_cmd()
         .args([
             "-v",
             "error",
@@ -259,7 +281,7 @@ pub async fn normalize_clip(
         _ => "libx264",
     };
 
-    let mut cmd = create_command("ffmpeg");
+    let mut cmd = create_ffmpeg_cmd();
     cmd.arg("-y")
         .args(["-loglevel", "error"])
         .arg("-i")
@@ -268,65 +290,59 @@ pub async fn normalize_clip(
 
     match audio_tracks {
         0 => {
-            cmd.args(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]);
             cmd.args(["-filter_complex", &scale])
-                .args(["-map", "[vout]", "-map", "1:a:0"])
-                .args([
-                    "-c:v",
-                    encoder_str,
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    "-ar",
-                    "44100",
-                    "-shortest",
-                ]);
+                .args(["-map", "[vout]"])
+                .args(["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+                .args(["-c:a", "aac", "-b:a", "192k", "-shortest"]);
         }
         1 => {
             cmd.args(["-filter_complex", &scale])
-                .args(["-map", "[vout]", "-map", "0:a:0"])
-                .args([
-                    "-c:v",
-                    encoder_str,
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    "-ac",
-                    "2",
-                    "-ar",
-                    "44100",
-                    "-shortest",
-                ]);
+                .args(["-map", "[vout]"])
+                .args(["-map", "0:a:0"])
+                .args(["-c:a", "aac", "-b:a", "192k"]);
         }
-        n => {
-            let mix_inputs: String = (0..n).map(|i| format!("[0:a:{}]", i)).collect();
-            let filter = format!(
-                "{};{}amix=inputs={}:duration=longest[aout]",
-                scale, mix_inputs, n
-            );
+        _ => {
+            let mut filter = scale.clone();
+            filter.push(';');
+            for i in 0..audio_tracks {
+                filter.push_str(&format!("[0:a:{}]", i));
+            }
+            filter.push_str(&format!(
+                "amix=inputs={}:duration=longest:dropout_transition=2[aout]",
+                audio_tracks
+            ));
+
             cmd.args(["-filter_complex", &filter])
-                .args(["-map", "[vout]", "-map", "[aout]"])
-                .args([
-                    "-c:v",
-                    encoder_str,
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "192k",
-                    "-ac",
-                    "2",
-                    "-ar",
-                    "44100",
-                    "-shortest",
-                ]);
+                .args(["-map", "[vout]"])
+                .args(["-map", "[aout]"])
+                .args(["-c:a", "aac", "-b:a", "192k"]);
         }
     }
 
+    cmd.args(["-c:v", encoder_str]);
+
+    match selected_encoder {
+        VideoEncoder::Nvidia => {
+            cmd.args(["-preset", "p5", "-cq", "18"]);
+        }
+        VideoEncoder::Amd => {
+            cmd.args(["-quality", "quality", "-rc", "cqp", "-qp_p", "18", "-qp_i", "18"]);
+        }
+        VideoEncoder::Intel => {
+            cmd.args(["-preset", "medium", "-global_quality", "18"]);
+        }
+        _ => {
+            cmd.args(["-preset", "superfast", "-crf", "18"]);
+        }
+    }
+
+    cmd.args(["-pix_fmt", "yuv420p"]);
     cmd.arg(output);
-    match cmd.status().await {
-        Ok(status) if status.success() => {
+
+    let status = cmd.status().await;
+
+    match status {
+        Ok(s) if s.success() => {
             info!("✓  {:?}", output.file_name().unwrap_or_default());
             true
         }
@@ -340,7 +356,7 @@ pub async fn normalize_clip(
 }
 
 pub async fn process_video_file(input_file_path: &Path, output_file_path: &Path) -> bool {
-    let status = create_command("ffmpeg")
+    let status = create_ffmpeg_cmd()
         .arg("-y")
         .args(["-loglevel", "error"])
         .args(["-i"])
@@ -374,7 +390,7 @@ pub fn path_to_string(file_path: &Path) -> String {
 }
 
 pub async fn detect_best_encoder() -> VideoEncoder {
-    let output = create_command("ffmpeg")
+    let output = create_ffmpeg_cmd()
         .arg("-encoders")
         .output()
         .await;
