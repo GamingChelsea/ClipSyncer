@@ -179,6 +179,115 @@ pub fn setup_ui(
         });
     });
 
+    let ui_weak_check = ui_weak.clone();
+    let storage_check = Arc::clone(storage);
+    ui.on_check_for_updates(move || {
+        let ui_weak = ui_weak_check.clone();
+        let storage_clone = Arc::clone(&storage_check);
+        let _ = slint::invoke_from_event_loop({
+            let ui_weak = ui_weak.clone();
+            let storage_clone = Arc::clone(&storage_clone);
+            move || {
+                let lang = storage_clone
+                    .lock()
+                    .map(|g| g.language.clone())
+                    .unwrap_or_else(|_| "en".to_string());
+                let i18n = crate::i18n::get_i18n_strings(&lang);
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_update_status_msg(i18n.update_status_checking);
+                }
+            }
+        });
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            let check_res = rt.block_on(crate::auto_updater::check_for_update());
+            let ui_weak_thread = ui_weak.clone();
+            let storage_clone = Arc::clone(&storage_clone);
+            let _ = slint::invoke_from_event_loop(move || {
+                let lang = storage_clone
+                    .lock()
+                    .map(|g| g.language.clone())
+                    .unwrap_or_else(|_| "en".to_string());
+                let i18n = crate::i18n::get_i18n_strings(&lang);
+                if let Some(ui) = ui_weak_thread.upgrade() {
+                    match check_res {
+                        Ok(Some(info)) => {
+                            ui.set_update_status_msg("".into());
+                            ui.set_update_version(info.version.into());
+                            ui.set_update_available(true);
+                        }
+                        Ok(None) => {
+                            ui.set_update_status_msg(i18n.update_status_latest);
+                        }
+                        Err(_) => {
+                            ui.set_update_status_msg(i18n.update_status_failed);
+                        }
+                    }
+                }
+            });
+        });
+    });
+
+    let ui_weak_install = ui_weak.clone();
+    ui.on_install_update(move || {
+        let ui_weak = ui_weak_install.clone();
+        let _ = slint::invoke_from_event_loop({
+            let ui_weak = ui_weak.clone();
+            move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_is_downloading_update(true);
+                    ui.set_update_download_progress(0.0);
+                }
+            }
+        });
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(_) => return,
+            };
+            rt.block_on(async {
+                if let Ok(Some(info)) = crate::auto_updater::check_for_update().await {
+                    let ui_weak_cb = ui_weak.clone();
+                    let _ = crate::auto_updater::download_and_install_update(
+                        &info.download_url,
+                        &info.asset_name,
+                        move |progress| {
+                            let ui_weak = ui_weak_cb.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_update_download_progress(progress);
+                                }
+                            });
+                        },
+                    )
+                    .await;
+                } else {
+                    let ui_weak = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_is_downloading_update(false);
+                        }
+                    });
+                }
+            });
+        });
+    });
+
+    let ui_weak_dismiss = ui_weak.clone();
+    ui.on_dismiss_update(move || {
+        let ui_weak = ui_weak_dismiss.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_update_available(false);
+            }
+        });
+    });
+
     let ui_weak_log = ui_weak.clone();
     tokio::spawn(async move {
         while let Some(new_log) = log_rx.recv().await {

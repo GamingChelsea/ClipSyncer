@@ -96,6 +96,17 @@ export struct I18nStrings {
     status_completed: string,
     status_cancelled: string,
     btn_cancel: string,
+    btn_check_updates: string,
+    update_title: string,
+    update_desc: string,
+    update_dialog_title: string,
+    update_dialog_desc: string,
+    btn_update_now: string,
+    btn_later: string,
+    update_status_downloading: string,
+    update_status_latest: string,
+    update_status_checking: string,
+    update_status_failed: string,
 }
 
 component SettingsEntry inherits Rectangle {
@@ -180,6 +191,14 @@ export component AppWindow inherits Window {
     callback autostart_changed(bool);
     in-out property <int> language_selection_index: 0;
     callback language_change(int);
+    in-out property <bool> update_available: false;
+    in-out property <string> update_version: "";
+    in-out property <bool> is_downloading_update: false;
+    in-out property <float> update_download_progress: 0.0;
+    in-out property <string> update_status_msg: "";
+    callback check_for_updates();
+    callback install_update();
+    callback dismiss_update();
 
     Main := ScrollView {
         VerticalLayout {
@@ -553,6 +572,19 @@ export component AppWindow inherits Window {
                                 }
                             }
                         }
+
+                        Separator { }
+
+                        SettingsEntry {
+                            title-text: root.i18n.update_title;
+                            description-text: root.update_status_msg != "" ? root.update_status_msg : root.i18n.update_desc;
+
+                            Button {
+                                size: ButtonSize.sm;
+                                text: root.i18n.btn_check_updates;
+                                clicked => { root.check_for_updates(); }
+                            }
+                        }
                     }
 
                     Separator { }
@@ -706,6 +738,74 @@ export component AppWindow inherits Window {
                         text: root.i18n.generating_login_link;
                         variant: TextVariant.body;
                         tone: TextTone.muted;
+                    }
+                }
+            }
+        }
+    }
+
+    if (update_available): Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: #000000bf;
+        x: 0;
+        y: 0;
+
+        Card {
+            width: min(parent.width - 40px, 460px);
+            variant: CardVariant.raised;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+
+                Typography {
+                    text: root.i18n.update_dialog_title + " (v" + root.update_version + ")";
+                    font-size: 18px;
+                    font-weight: 700;
+                    color: #ffffff;
+                }
+
+                Typography {
+                    text: root.i18n.update_dialog_desc;
+                    variant: TextVariant.body;
+                    tone: TextTone.muted;
+                    wrap: word-wrap;
+                }
+
+                if (root.is_downloading_update): VerticalLayout {
+                    spacing: 8px;
+                    Typography {
+                        text: root.i18n.update_status_downloading + " " + round(root.update_download_progress * 100) + "%";
+                        variant: TextVariant.body-sm;
+                        color: #60a5fa;
+                    }
+                    Progress {
+                        value: root.update_download_progress * 100;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: end;
+
+                    if (!root.is_downloading_update): Button {
+                        text: root.i18n.btn_later;
+                        variant: ButtonVariant.ghost;
+                        clicked => {
+                            root.dismiss_update();
+                        }
+                    }
+
+                    Button {
+                        disabled: root.is_downloading_update;
+                        text: root.is_downloading_update ? root.i18n.update_status_downloading : root.i18n.btn_update_now;
+                        variant: ButtonVariant.default;
+                        clicked => {
+                            root.install_update();
+                        }
                     }
                 }
             }

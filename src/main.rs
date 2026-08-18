@@ -22,6 +22,7 @@ mod ui;
 mod uploader;
 mod video;
 mod i18n;
+pub mod auto_updater;
 
 use logger::SlintLayer;
 use storage::{AppStorage, PrivacyStatus, load_storage};
@@ -151,6 +152,19 @@ fn main() {
             }
         });
     }
+
+    let ui_weak_update_check = ui_weak.clone();
+    rt.spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Ok(Some(info)) = auto_updater::check_for_update().await {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_update_check.upgrade() {
+                    ui.set_update_version(info.version.into());
+                    ui.set_update_available(true);
+                }
+            });
+        }
+    });
 
     slint::run_event_loop_until_quit().expect("Fehler beim Slint Event Loop");
 }
